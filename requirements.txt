@@ -1,0 +1,23 @@
+# 人脸识别系统依赖
+# Face Recognition System Requirements
+
+# 基础依赖
+opencv-python>=4.5.0
+numpy>=1.19.0
+Pillow>=8.0.0
+
+# PyTorch (根据你的 CUDA 版本选择)
+# CPU 版本
+torch>=1.9.0
+torchvision>=0.10.0
+
+# GUI
+PyQt5>=5.15.0
+
+# 人脸检测 (旧版兼容)
+face-recognition>=1.3.0
+dlib>=19.18.0
+
+# 工具
+tqdm>=4.60.0
+matplotlib>=3.3.0
