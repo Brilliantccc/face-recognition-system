@@ -1,29 +1,20 @@
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
+dist/
+build/
+eggs/
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 env/
-ENV/
+.env
+.env.local
 
 # IDE
 .vscode/
@@ -40,12 +31,11 @@ Desktop.ini
 # Project specific
 data/db/*.db
 data/faces/
-trainer/data/
 trainer/models/saved/
+trainer/data/
 *.pth
-*.npy
-.env
-.env.local
+*.pt
+*.onnx
 
 # Logs
 *.log

@@ -1,6 +1,7 @@
 """
 人脸模型推理模块
 使用训练好的模型进行人脸识别
+支持 YOLO 人脸检测 (更快速)
 """
 
 import os
@@ -11,25 +12,38 @@ import torch
 import numpy as np
 from PIL import Image
 from torchvision import transforms
+from typing import List, Tuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trainer.models.facenet import MobileFaceNet
+from common.config import USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE
 
 
 class FaceRecognizer:
     """人脸识别器"""
-    def __init__(self, model_dir="trainer/models/saved", confidence_threshold=0.6):
+    def __init__(self, model_dir="trainer/models/saved", confidence_threshold=0.6,
+                 use_yolo: bool = None, yolo_model_size: str = None, yolo_confidence: float = None):
         """
         初始化识别器
         :param model_dir: 模型目录
         :param confidence_threshold: 置信度阈值
+        :param use_yolo: 是否使用 YOLO 进行人脸检测
+        :param yolo_model_size: YOLO 模型大小
+        :param yolo_confidence: YOLO 置信度阈值
         """
         self.model_dir = model_dir
         self.confidence_threshold = confidence_threshold
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 人脸检测器
+        # YOLO 配置
+        self.use_yolo = use_yolo if use_yolo is not None else USE_YOLO_DETECTION
+        self.yolo_detector = None
+
+        if self.use_yolo:
+            self._init_yolo_detector(yolo_model_size, yolo_confidence)
+
+        # 人脸检测器 (备用)
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default_aligned.xml')
         if self.face_cascade.empty():
             self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -47,6 +61,27 @@ class FaceRecognizer:
         self.idx_to_class = {}
         self.embeddings = {}  # 存储已知人脸的嵌入向量
         self.load_model()
+
+    def _init_yolo_detector(self, model_size: str = None, confidence: float = None):
+        """初始化 YOLO 检测器"""
+        try:
+            from common.yolo_detector import YOLOFaceDetector
+
+            model_size = model_size or YOLO_MODEL_SIZE
+            conf = confidence or YOLO_CONFIDENCE
+
+            self.yolo_detector = YOLOFaceDetector(
+                model_size=model_size,
+                confidence=conf,
+                device="cpu"
+            )
+            print(f"YOLO detector initialized for FaceRecognizer")
+        except ImportError as e:
+            print(f"Warning: YOLO not available, using Haar Cascade: {e}")
+            self.use_yolo = False
+        except Exception as e:
+            print(f"Warning: YOLO initialization failed: {e}")
+            self.use_yolo = False
 
     def load_model(self):
         """加载模型"""
@@ -78,9 +113,37 @@ class FaceRecognizer:
         print(f"Model loaded successfully. Classes: {len(self.idx_to_class)}")
         return True
 
-    def detect_faces(self, image):
+    def detect_faces(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
         检测人脸
+        :param image: BGR格式的图片
+        :return: 人脸位置列表 [(x, y, w, h), ...]
+        """
+        if self.use_yolo and self.yolo_detector is not None:
+            return self._detect_faces_yolo(image)
+        else:
+            return self._detect_faces_haar(image)
+
+    def _detect_faces_yolo(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """
+        使用 YOLO 检测人脸
+        :param image: BGR格式的图片
+        :return: 人脸位置列表 [(x, y, w, h), ...]
+        """
+        detections = self.yolo_detector.detect(image)
+
+        faces = []
+        for x1, y1, x2, y2, conf in detections:
+            # 转换为 (x, y, w, h) 格式
+            w = x2 - x1
+            h = y2 - y1
+            faces.append((x1, y1, w, h))
+
+        return faces
+
+    def _detect_faces_haar(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """
+        使用 Haar Cascade 检测人脸
         :param image: BGR格式的图片
         :return: 人脸位置列表 [(x, y, w, h), ...]
         """
@@ -207,6 +270,23 @@ class FaceRecognizer:
             print(f"Loaded {len(self.embeddings)} face embeddings")
             return True
         return False
+
+    def set_yolo_enabled(self, enabled: bool):
+        """
+        动态启用/禁用 YOLO 检测
+        :param enabled: 是否启用
+        """
+        self.use_yolo = enabled
+        if enabled and self.yolo_detector is None:
+            self._init_yolo_detector()
+        print(f"YOLO detection {'enabled' if enabled else 'disabled'}")
+
+    def get_detection_method(self) -> str:
+        """
+        获取当前使用的检测方法
+        :return: 检测方法名称
+        """
+        return "YOLO" if (self.use_yolo and self.yolo_detector) else "Haar Cascade"
 
 
 class FaceDetector:

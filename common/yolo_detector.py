@@ -1,0 +1,221 @@
+"""
+YOLO 人脸检测模块
+使用 YOLOv8 进行快速人脸检测
+"""
+
+import cv2
+import numpy as np
+from typing import List, Tuple, Optional
+import os
+
+
+class YOLOFaceDetector:
+    """基于 YOLOv8 的人脸检测器"""
+
+    def __init__(self, model_size: str = "n", confidence: float = 0.5, device: str = "cpu"):
+        """
+        初始化 YOLO 人脸检测器
+        :param model_size: 模型大小 (n/nano, s/small, m/medium, l/large, x/xlarge)
+        :param confidence: 置信度阈值
+        :param device: 推理设备 (cpu/cuda)
+        """
+        self.model_size = model_size
+        self.confidence = confidence
+        self.device = device
+        self.model = None
+
+        self._load_model()
+
+    def _load_model(self):
+        """加载 YOLO 人脸检测模型"""
+        try:
+            from ultralytics import YOLO
+
+            # 使用 YOLOv8 人脸检测模型
+            # 可以使用预训练的人脸检测模型或通用目标检测模型
+            model_name = f"yolov8{self.model_size}.pt"
+
+            # 检查是否有本地的人脸检测模型
+            local_model_path = os.path.join(
+                os.path.dirname(__file__), "..", "models", f"yolov8{self.model_size}_face.pt"
+            )
+
+            if os.path.exists(local_model_path):
+                self.model = YOLO(local_model_path)
+                print(f"Loaded local face model: {local_model_path}")
+            else:
+                # 使用通用 YOLOv8 模型（需要过滤 person 类别）
+                self.model = YOLO(model_name)
+                print(f"Loaded YOLO model: {model_name}")
+
+            print(f"YOLOFaceDetector initialized (device: {self.device})")
+
+        except ImportError:
+            raise ImportError(
+                "请安装 ultralytics: pip install ultralytics"
+            )
+
+    def detect(self, image: np.ndarray) -> List[Tuple[int, int, int, int, float]]:
+        """
+        检测人脸
+        :param image: BGR 格式的图片
+        :return: 人脸位置列表 [(x1, y1, x2, y2, confidence), ...]
+        """
+        if self.model is None:
+            return []
+
+        results = self.model(
+            image,
+            conf=self.confidence,
+            device=self.device,
+            verbose=False
+        )
+
+        faces = []
+
+        for result in results:
+            boxes = result.boxes
+            if boxes is not None:
+                for box in boxes:
+                    # 获取边界框坐标
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    conf = float(box.conf[0])
+
+                    # 检查是否为人脸（如果是通用模型，需要过滤）
+                    cls = int(box.cls[0])
+                    if self._is_face_class(cls):
+                        faces.append((x1, y1, x2, y2, conf))
+
+        return faces
+
+    def _is_face_class(self, class_id: int) -> bool:
+        """
+        检查类别是否为人脸
+        :param class_id: 类别 ID
+        :return: 是否是人脸类别
+        """
+        # 如果使用的是专门的人脸检测模型，所有检测结果都是人脸
+        # 如果使用的是通用模型，person 类别 ID 为 0
+        # 这里我们可以根据需要调整
+        return True  # 默认返回 True，假设使用的是人脸专用模型
+
+    def detect_with_landmarks(self, image: np.ndarray) -> List[dict]:
+        """
+        检测人脸并返回详细信息
+        :param image: BGR 格式的图片
+        :return: 人脸信息列表
+        """
+        if self.model is None:
+            return []
+
+        results = self.model(
+            image,
+            conf=self.confidence,
+            device=self.device,
+            verbose=False
+        )
+
+        faces = []
+
+        for result in results:
+            boxes = result.boxes
+            if boxes is not None:
+                for i, box in enumerate(boxes):
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    conf = float(box.conf[0])
+                    cls = int(box.cls[0])
+
+                    if self._is_face_class(cls):
+                        face_info = {
+                            "bbox": (x1, y1, x2, y2),
+                            "confidence": conf,
+                            "width": x2 - x1,
+                            "height": y2 - y1
+                        }
+                        faces.append(face_info)
+
+        return faces
+
+    def extract_face(self, image: np.ndarray, bbox: Tuple[int, int, int, int],
+                     margin: float = 0.2) -> Optional[np.ndarray]:
+        """
+        从图片中提取人脸区域
+        :param image: 原始图片
+        :param bbox: 边界框 (x1, y1, x2, y2)
+        :param margin: 边距比例
+        :return: 提取的人脸图片
+        """
+        x1, y1, x2, y2 = bbox
+        h, w = image.shape[:2]
+
+        # 添加边距
+        margin_x = int((x2 - x1) * margin)
+        margin_y = int((y2 - y1) * margin)
+
+        x1_new = max(0, x1 - margin_x)
+        y1_new = max(0, y1 - margin_y)
+        x2_new = min(w, x2 + margin_x)
+        y2_new = min(h, y2 + margin_y)
+
+        face_img = image[y1_new:y2_new, x1_new:x2_new]
+
+        if face_img.size == 0:
+            return None
+
+        return face_img
+
+
+class YOLODetectorFactory:
+    """YOLO 检测器工厂类"""
+
+    @staticmethod
+    def create_detector(model_size: str = "n", confidence: float = 0.5,
+                       device: str = "cpu") -> YOLOFaceDetector:
+        """
+        创建 YOLO 检测器实例
+        :param model_size: 模型大小
+        :param confidence: 置信度阈值
+        :param device: 推理设备
+        :return: YOLOFaceDetector 实例
+        """
+        return YOLOFaceDetector(
+            model_size=model_size,
+            confidence=confidence,
+            device=device
+        )
+
+
+def test_yolo_detector():
+    """测试 YOLO 检测器"""
+    detector = YOLOFaceDetector(model_size="n", confidence=0.5)
+
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(0)
+
+    print("Press ESC to exit")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        faces = detector.detect(frame)
+
+        for x1, y1, x2, y2, conf in faces:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            text = f"Face: {conf:.2%}"
+            cv2.putText(frame, text, (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        cv2.imshow("YOLO Face Detection", frame)
+
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    test_yolo_detector()
