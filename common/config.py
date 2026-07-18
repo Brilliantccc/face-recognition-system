@@ -16,11 +16,11 @@ DATABASE_PATH = os.path.join(DATA_DIR, "db", "face_access.db")
 FACES_DIR = os.path.join(DATA_DIR, "faces")
 
 # 人脸识别配置
-FACE_RECOGNITION_TOLERANCE = 0.6  # 识别容差阈值，越小越严格
+FACE_RECOGNITION_TOLERANCE = 0.45  # 识别容差阈值，越小越严格
 FACE_DETECTION_MODEL = "hog"  # 人脸检测模型: "hog" (CPU) 或 "cnn" (GPU)
 
 # YOLO 人脸检测配置
-USE_YOLO_DETECTION = True  # 是否使用 YOLO 进行人脸检测 (False 则使用 face_recognition)
+USE_YOLO_DETECTION = False  # 是否使用 YOLO 进行人脸检测 (False 则使用 face_recognition)
 YOLO_MODEL_SIZE = "n"  # YOLO 模型大小: "n" (nano), "s" (small), "m" (medium), "l" (large), "x" (xlarge)
 YOLO_CONFIDENCE = 0.5  # YOLO 置信度阈值
 

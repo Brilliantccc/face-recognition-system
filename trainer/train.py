@@ -8,6 +8,7 @@ import sys
 import json
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
@@ -111,7 +112,10 @@ class FaceTrainer:
     def prepare_data(self, batch_size=32):
         """准备数据加载器"""
         # 加载训练集
-        train_dataset = FaceDataset(self.data_dir, transform=self.train_transform)
+        full_dataset = FaceDataset(self.data_dir, transform=self.train_transform)
+        self.class_to_idx = full_dataset.class_to_idx
+        self.idx_to_class = full_dataset.idx_to_class
+        num_classes = len(self.class_to_idx)
 
         # 加载验证集
         val_dir = os.path.join(self.data_dir, "test")
@@ -119,18 +123,18 @@ class FaceTrainer:
             val_dataset = FaceDataset(self.data_dir, transform=self.val_transform)
         else:
             # 如果没有验证集，从训练集中划分
-            val_size = int(0.2 * len(train_dataset))
-            train_size = len(train_dataset) - val_size
-            train_dataset, val_dataset = torch.utils.data.random_split(
-                train_dataset, [train_size, val_size]
+            val_size = int(0.2 * len(full_dataset))
+            train_size = len(full_dataset) - val_size
+            full_dataset, val_dataset = torch.utils.data.random_split(
+                full_dataset, [train_size, val_size]
             )
 
-        self.train_dataset = train_dataset
+        self.train_dataset = full_dataset
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        train_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
-        return train_loader, val_loader, len(train_dataset.class_to_idx)
+        return train_loader, val_loader, num_classes
 
     def train(self, epochs=50, batch_size=32, learning_rate=0.001):
         """
@@ -151,17 +155,27 @@ class FaceTrainer:
         model = MobileFaceNet(embedding_size=128, num_classes=num_classes).to(self.device)
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-        # 损失函数
-        criterion = ArcFaceLoss(128, num_classes).to(self.device)
+        # 使用交叉熵损失函数（带类别权重，处理数据不平衡）
+        # 计算类别权重（样本少的类别权重高）
+        class_counts = [0] * num_classes
+        for _, labels in train_loader:
+            for label in labels:
+                class_counts[label.item()] += 1
+
+        total_samples = sum(class_counts)
+        class_weights = [total_samples / (num_classes * count) if count > 0 else 1.0 for count in class_counts]
+        class_weights = torch.FloatTensor(class_weights).to(self.device)
+
+        print(f"Class counts: {class_counts}")
+        print(f"Class weights: {[f'{w:.2f}' for w in class_weights]}")
+
+        criterion = nn.CrossEntropyLoss(weight=class_weights).to(self.device)
 
         # 优化器
-        optimizer = optim.Adam([
-            {'params': model.parameters(), 'lr': learning_rate},
-            {'params': criterion.parameters(), 'lr': learning_rate}
-        ])
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
         # 学习率调度器
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
         # 训练历史
         history = {
@@ -187,8 +201,13 @@ class FaceTrainer:
 
                 optimizer.zero_grad()
 
-                embeddings, logits = model(images)
-                loss = criterion(embeddings, labels)
+                output = model(images)
+                if isinstance(output, tuple):
+                    embeddings, logits = output
+                else:
+                    logits = output
+
+                loss = criterion(logits, labels)
 
                 loss.backward()
                 optimizer.step()
@@ -203,7 +222,6 @@ class FaceTrainer:
 
             # 验证阶段
             model.eval()
-            criterion.eval()
             val_loss = 0.0
             val_correct = 0
             val_total = 0
@@ -213,8 +231,13 @@ class FaceTrainer:
                     images = images.to(self.device)
                     labels = labels.to(self.device)
 
-                    embeddings, logits = model(images)
-                    loss = criterion(embeddings, labels)
+                    output = model(images)
+                    if isinstance(output, tuple):
+                        embeddings, logits = output
+                    else:
+                        logits = output
+
+                    loss = criterion(logits, labels)
 
                     val_loss += loss.item()
                     _, predicted = logits.max(1)
@@ -225,7 +248,7 @@ class FaceTrainer:
             val_acc = 100. * val_correct / val_total
 
             # 更新学习率
-            scheduler.step()
+            scheduler.step(val_loss)
 
             # 记录历史
             history['train_loss'].append(train_loss)
@@ -241,7 +264,7 @@ class FaceTrainer:
             # 保存最佳模型
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
-                self.save_model(model, criterion, num_classes, self.train_dataset.class_to_idx)
+                self.save_model(model, num_classes, self.class_to_idx)
                 print(f"  -> Best model saved (Val Acc: {val_acc:.2f}%)")
 
         # 保存训练历史
@@ -253,11 +276,10 @@ class FaceTrainer:
 
         return history
 
-    def save_model(self, model, criterion, num_classes, class_to_idx):
+    def save_model(self, model, num_classes, class_to_idx):
         """保存模型"""
         checkpoint = {
             'model_state_dict': model.state_dict(),
-            'criterion_state_dict': criterion.state_dict(),
             'num_classes': num_classes,
             'embedding_size': 128,
             'class_to_idx': class_to_idx,

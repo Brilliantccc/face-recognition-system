@@ -41,10 +41,10 @@ class GateWindow(QMainWindow):
         # 启动人脸识别后台线程
         self.access_control.start_processing()
 
-        # 设置定时器
+        # 设置定时器 (降低帧率以减少CPU使用)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
-        self.timer.start(100)
+        self.timer.start(150)  # 约7 FPS
 
         # 初始化UI
         self.init_ui()
@@ -99,6 +99,11 @@ class GateWindow(QMainWindow):
         self.faces_count_label.setFont(QFont("Arial", 12))
         status_layout.addWidget(self.faces_count_label)
 
+        self.model_label = QLabel("Model: Loading...")
+        self.model_label.setFont(QFont("Arial", 10))
+        self.model_label.setStyleSheet("color: #666;")
+        status_layout.addWidget(self.model_label)
+
         status_group.setLayout(status_layout)
         right_layout.addWidget(status_group)
 
@@ -143,20 +148,18 @@ class GateWindow(QMainWindow):
 
             # 更新状态显示
             if status == "Pass":
-                self.status_label.setText("Status: PASS")
-                self.status_label.setStyleSheet("padding: 10px; background-color: #90EE90; font-size: 16px; font-weight: bold;")
-            elif status == "Reject":
-                self.status_label.setText("Status: REJECT")
-                self.status_label.setStyleSheet("padding: 10px; background-color: #FFB6C1; font-size: 16px; font-weight: bold;")
-            else:
-                self.status_label.setText("Status: Standby")
-                self.status_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; font-size: 16px;")
-
-            # 更新用户信息
-            if user_name:
+                self.status_label.setText(f"✓ 欢迎: {user_name}")
+                self.status_label.setStyleSheet("padding: 15px; background-color: #90EE90; font-size: 20px; font-weight: bold; color: #006400;")
                 self.user_label.setText(f"User: {user_name}")
                 self.confidence_label.setText(f"Confidence: {confidence:.2%}")
+            elif status == "Reject":
+                self.status_label.setText("✗ 未授权")
+                self.status_label.setStyleSheet("padding: 15px; background-color: #FFB6C1; font-size: 20px; font-weight: bold; color: #8B0000;")
+                self.user_label.setText("User: Unknown")
+                self.confidence_label.setText("Confidence: 0%")
             else:
+                self.status_label.setText("请正对摄像头")
+                self.status_label.setStyleSheet("padding: 15px; background-color: #f0f0f0; font-size: 16px;")
                 self.user_label.setText("User: None")
                 self.confidence_label.setText("Confidence: 0%")
 
@@ -175,6 +178,11 @@ class GateWindow(QMainWindow):
         """更新界面信息"""
         users = self.user_manager.get_all_users(active_only=True)
         self.faces_count_label.setText(f"Registered Users: {len(users)}")
+
+        # 显示识别模型信息
+        detect_method = self.access_control.get_detection_method()
+        recog_method = self.access_control.get_recognition_method()
+        self.model_label.setText(f"Detection: {detect_method} | Recognition: {recog_method}")
 
         # 更新门禁日志
         self.log_list.clear()

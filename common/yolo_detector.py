@@ -7,6 +7,12 @@ import cv2
 import numpy as np
 from typing import List, Tuple, Optional
 import os
+import sys
+
+# 确保项目根目录在路径中
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 
 class YOLOFaceDetector:

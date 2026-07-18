@@ -95,7 +95,7 @@ class MobileFaceNet(nn.Module):
         self.conv3 = BasicConv2d(128, 128, 3, 2, 1)
 
         self.flatten = nn.Flatten()
-        self.fc = nn.Linear(128 * 7 * 7, embedding_size)
+        self.fc = nn.Linear(128 * 2 * 2, embedding_size)
 
         # 分类头（训练时使用）
         self.classifier = nn.Linear(embedding_size, num_classes) if num_classes else None
@@ -111,7 +111,7 @@ class MobileFaceNet(nn.Module):
         # L2 归一化
         x = F.normalize(x, p=2, dim=1)
 
-        if self.classifier is not None and self.training:
+        if self.classifier is not None:
             return x, self.classifier(x)
 
         return x
