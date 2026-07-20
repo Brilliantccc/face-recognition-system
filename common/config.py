@@ -15,6 +15,9 @@ DATABASE_PATH = os.path.join(DATA_DIR, "db", "face_access.db")
 # 人脸数据目录
 FACES_DIR = os.path.join(DATA_DIR, "faces")
 
+# 工作照片目录
+WORK_PHOTOS_DIR = os.path.join(DATA_DIR, "work_photos")
+
 # 人脸识别配置
 FACE_RECOGNITION_TOLERANCE = 0.45  # 识别容差阈值，越小越严格
 FACE_DETECTION_MODEL = "hog"  # 人脸检测模型: "hog" (CPU) 或 "cnn" (GPU)

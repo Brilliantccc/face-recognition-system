@@ -56,6 +56,8 @@ class Database:
             cursor.execute("ALTER TABLE users ADD COLUMN phone TEXT")
         if 'role' not in columns:
             cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'staff'")
+        if 'work_photo' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN work_photo TEXT")
 
         # 人脸特征表
         cursor.execute('''
@@ -194,7 +196,8 @@ class Database:
             return {
                 "id": row[0], "employee_id": row[1], "name": row[2],
                 "department": row[3], "phone": row[4], "role": row[5],
-                "is_active": row[6], "created_at": row[7]
+                "is_active": row[6], "created_at": row[7],
+                "work_photo": row[8] if len(row) > 8 else None
             }
         return None
 
@@ -215,7 +218,8 @@ class Database:
             return {
                 "id": row[0], "employee_id": row[1], "name": row[2],
                 "department": row[3], "phone": row[4], "role": row[5],
-                "is_active": row[6], "created_at": row[7]
+                "is_active": row[6], "created_at": row[7],
+                "work_photo": row[8] if len(row) > 8 else None
             }
         return None
 
@@ -229,9 +233,9 @@ class Database:
         cursor = conn.cursor()
 
         if active_only:
-            cursor.execute("SELECT * FROM users WHERE is_active = 1 ORDER BY created_at DESC")
+            cursor.execute("SELECT * FROM users WHERE is_active = 1 ORDER BY employee_id ASC")
         else:
-            cursor.execute("SELECT * FROM users ORDER BY created_at DESC")
+            cursor.execute("SELECT * FROM users ORDER BY employee_id ASC")
 
         rows = cursor.fetchall()
         conn.close()
@@ -240,7 +244,8 @@ class Database:
             {
                 "id": row[0], "employee_id": row[1], "name": row[2],
                 "department": row[3], "phone": row[4], "role": row[5],
-                "is_active": row[6], "created_at": row[7]
+                "is_active": row[6], "created_at": row[7],
+                "work_photo": row[8] if len(row) > 8 else None
             }
             for row in rows
         ]
@@ -265,7 +270,8 @@ class Database:
             {
                 "id": row[0], "employee_id": row[1], "name": row[2],
                 "department": row[3], "phone": row[4], "role": row[5],
-                "is_active": row[6], "created_at": row[7]
+                "is_active": row[6], "created_at": row[7],
+                "work_photo": row[8] if len(row) > 8 else None
             }
             for row in rows
         ]
@@ -307,6 +313,21 @@ class Database:
 
         return [(row[0], np.frombuffer(row[1], dtype=np.float64)) for row in rows]
 
+    def get_user_faces_with_id(self, user_id: int) -> List[Dict]:
+        """
+        获取用户的人脸照片列表（包含ID，用于删除）
+        :param user_id: 用户ID
+        :return: [{'id': face_id, 'image_path': path, 'created_at': time}, ...]
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, image_path, created_at FROM face_encodings WHERE user_id = ?", (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [{'id': row[0], 'image_path': row[1], 'created_at': row[2]} for row in rows]
+
     def get_user_face_count(self, user_id: int) -> int:
         """
         获取用户的人脸照片数量
@@ -335,6 +356,50 @@ class Database:
         conn.commit()
         conn.close()
         return deleted
+
+    def delete_face_encoding(self, face_id: int) -> bool:
+        """
+        删除单个人脸特征
+        :param face_id: 人脸特征ID
+        :return: 是否删除成功
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM face_encodings WHERE id = ?", (face_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def set_work_photo(self, user_id: int, path: str) -> bool:
+        """
+        设置用户工作照片
+        :param user_id: 用户ID
+        :param path: 照片文件路径
+        :return: 是否成功
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET work_photo = ? WHERE id = ?", (path, user_id))
+        updated = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return updated
+
+    def clear_work_photo(self, user_id: int) -> bool:
+        """
+        清除用户工作照片
+        :param user_id: 用户ID
+        :return: 是否成功
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET work_photo = NULL WHERE id = ?", (user_id,))
+        updated = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return updated
 
     def log_access(self, user_id: int, user_name: str, result: str,
                    confidence: float = None, gate_name: str = None):
