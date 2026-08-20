@@ -1,6 +1,7 @@
 """
-人脸模型训练脚本 - 基础默认版
-最简单的训练脚本，适合入门使用
+人脸模型训练脚本 - 简化版
+无AMP，无复杂功能，专注于稳定训练
+适合初次训练或调试使用
 """
 
 import os
@@ -22,7 +23,7 @@ if torch_utils.TORCH_AVAILABLE:
     transforms = torch_utils.transforms
     Image = torch_utils.Image
     from torch.utils.data import DataLoader, Dataset
-    from trainer.models.facenet import MobileFaceNet, ArcFaceLoss  # 添加 ArcFaceLoss
+    from trainer.models.facenet import MobileFaceNet, ArcFaceLoss
     from torch.nn import functional as F
 
 
@@ -66,8 +67,8 @@ class FaceDataset(Dataset):
         return image, label
 
 
-class BasicTrainer:
-    """基础训练器"""
+class SimpleTrainer:
+    """简化训练器"""
     
     def __init__(self, data_dir="trainer/data/aligned", 
                  model_dir="trainer/models/saved", use_gpu=True):
@@ -162,7 +163,7 @@ class BasicTrainer:
         import torch.optim as optim
 
         print("=" * 60)
-        print("Face Recognition Training (Basic)")
+        print("Face Recognition Training (Simple)")
         print("=" * 60)
 
         # 检查是否有断点可恢复
@@ -174,7 +175,6 @@ class BasicTrainer:
             resume_checkpoint = self.load_checkpoint(checkpoint_path)
             if resume_checkpoint:
                 start_epoch = resume_checkpoint['epoch'] + 1
-                # 从断点恢复类别映射
                 self.class_to_idx = resume_checkpoint.get('class_to_idx', {})
                 self.idx_to_class = resume_checkpoint.get('idx_to_class', {})
                 print(f"🔄 将从 Epoch {start_epoch + 1} 继续训练（上次到 Epoch {resume_checkpoint['epoch'] + 1}）")
@@ -190,7 +190,7 @@ class BasicTrainer:
         model = MobileFaceNet(embedding_size=128, num_classes=None).to(self.device)
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-        # 使用 ArcFace Loss（人脸识别专用损失函数）
+        # 使用 ArcFace Loss
         criterion = ArcFaceLoss(
             embedding_size=128,
             num_classes=num_classes,
@@ -199,19 +199,19 @@ class BasicTrainer:
         ).to(self.device)
         print(f"Using ArcFace Loss (s=32.0, m=0.20)")
 
-        # 使用 SGD + 动量（更好的泛化能力）
+        # 使用 SGD + 动量
         optimizer = optim.SGD([
             {'params': list(model.parameters()), 'weight_decay': 4e-5},
             {'params': list(criterion.parameters()), 'weight_decay': 0}
         ], lr=learning_rate, momentum=0.9, nesterov=True)
 
-        # 使用 OneCycleLR 学习率调度
+        # OneCycleLR 学习率调度
         total_steps = epochs * len(train_loader)
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=learning_rate,
             total_steps=total_steps,
-            pct_start=0.10,        # 10% 预热
+            pct_start=0.10,
             div_factor=25,
             final_div_factor=1000
         )
@@ -255,20 +255,15 @@ class BasicTrainer:
                 labels = labels.to(self.device, non_blocking=True)
 
                 optimizer.zero_grad(set_to_none=True)
-                
-                # 前向传播：模型只返回 embeddings
                 embeddings = model(images)
-                
-                # ArcFace Loss 计算 loss 和 logits
                 loss, logits = criterion(embeddings, labels)
-                
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
-                    list(model.parameters()) + list(criterion.parameters()), 
+                    list(model.parameters()) + list(criterion.parameters()),
                     max_norm=gradient_clip_max_norm
                 )
                 optimizer.step()
-                scheduler.step()  # OneCycleLR 每个 batch 更新
+                scheduler.step()
 
                 # 梯度监控（在累加 loss 之前检查，防止 NaN 污染统计）
                 current_loss = loss.item()
@@ -335,7 +330,6 @@ class BasicTrainer:
                     images = images.to(self.device, non_blocking=True)
                     labels = labels.to(self.device, non_blocking=True)
                     embeddings = model(images)
-                    # 使用 ArcFace 权重计算余弦相似度
                     W = F.normalize(criterion.weight, p=2, dim=1)
                     cosine = F.linear(embeddings, W)
                     _, predicted = cosine.max(1)
@@ -371,7 +365,7 @@ class BasicTrainer:
                                best_val_acc, history, num_classes, self.class_to_idx,
                                gradient_clip_max_norm, patience_counter)
 
-        # 训练完成后删除断点文件（训练已完成，不再需要续训）
+        # 训练完成后删除断点文件
         final_checkpoint = os.path.join(self.model_dir, "checkpoint.pth")
         if os.path.exists(final_checkpoint):
             os.remove(final_checkpoint)
@@ -432,7 +426,7 @@ class BasicTrainer:
         return history_path
 
 
-def get_next_version(model_dir, prefix="basic"):
+def get_next_version(model_dir, prefix="simple"):
     """获取下一个版本号"""
     import glob
     os.makedirs(model_dir, exist_ok=True)
@@ -455,24 +449,22 @@ def get_next_version(model_dir, prefix="basic"):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Basic Face Training")
+    parser = argparse.ArgumentParser(description="Simple Face Training")
     parser.add_argument("--data", type=str, default="trainer/data/aligned")
     parser.add_argument("--model-dir", type=str, default="trainer/models/saved")
-    parser.add_argument("--epochs", type=int, default=30, help="训练轮数（默认30轮）")
-    parser.add_argument("--batch-size", type=int, default=32, help="批次大小（默认32）")
-    parser.add_argument("--lr", type=float, default=0.0005, help="学习率（默认0.0005）")
+    parser.add_argument("--epochs", type=int, default=50, help="训练轮数（默认50轮）")
+    parser.add_argument("--batch-size", type=int, default=64, help="批次大小（默认64）")
+    parser.add_argument("--lr", type=float, default=0.001, help="学习率（默认0.001）")
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--resume", action="store_true", help="从上次断点继续训练")
 
     args = parser.parse_args()
 
-    # 续训模式下，使用已有的模型目录
+    # 续训模式下，查找可恢复的版本目录
     if args.resume and os.path.exists(args.model_dir):
-        # 查找最新的版本目录
         import glob as glob_module
-        version_dirs = sorted(glob_module.glob(os.path.join(args.model_dir, "basic_v*")))
+        version_dirs = sorted(glob_module.glob(os.path.join(args.model_dir, "simple_v*")))
         if version_dirs:
-            # 找到包含 checkpoint.pth 的版本
             for vdir in reversed(version_dirs):
                 ckpt = os.path.join(vdir, "checkpoint.pth")
                 if os.path.exists(ckpt):
@@ -480,11 +472,10 @@ def main():
                     print(f"🔄 找到可恢复的断点: {vdir}")
                     break
             else:
-                # 没找到断点，使用最新版本
                 args.model_dir = version_dirs[-1]
                 print(f"📂 使用最新版本目录: {version_dirs[-1]}")
 
-    # 续训模式下，如果 model_dir 已存在且包含数据，直接使用
+    # 续训模式下，如果 model_dir 已存在且包含断点，直接使用
     if args.resume and os.path.exists(os.path.join(args.model_dir, "checkpoint.pth")):
         print(f"📂 续训模式，模型目录: {args.model_dir}")
     else:
@@ -499,13 +490,13 @@ def main():
             print(f"请先运行预处理: python trainer/preprocess.py")
             return
 
-        version = get_next_version(args.model_dir, prefix="basic")
+        version = get_next_version(args.model_dir, prefix="simple")
         version_dir = os.path.join(args.model_dir, version)
         os.makedirs(version_dir, exist_ok=True)
         args.model_dir = version_dir
         print(f"📁 模型将保存到: {version_dir}")
 
-    trainer = BasicTrainer(args.data, args.model_dir, use_gpu=not args.cpu)
+    trainer = SimpleTrainer(args.data, args.model_dir, use_gpu=not args.cpu)
     trainer.train(args.epochs, args.batch_size, args.lr, resume=args.resume)
     print(f"\n✅ 训练完成！模型保存在: {args.model_dir}")
 

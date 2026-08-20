@@ -1,87 +1,127 @@
 # 人脸识别训练模块
 
-基于 PyTorch 的自定义人脸识别训练系统，使用 MobileFaceNet + ArcFace Loss。
+基于 PyTorch 的 MobileFaceNet + ArcFace Loss 人脸识别训练系统。
 
-## 功能
+## 项目结构
 
-- **数据收集**: 从摄像头或文件夹收集人脸数据
-- **模型训练**: 使用 MobileFaceNet 进行训练
-- **模型推理**: 使用训练好的模型进行识别
+```
+trainer/
+├── models/
+│   ├── __init__.py
+│   └── facenet.py          # MobileFaceNet 网络 + ArcFaceLoss 定义
+├── gui/
+│   ├── __init__.py
+│   └── trainer_window.py    # 训练 GUI 平台
+├── data/
+│   ├── raw/                 # 原始数据集（CASIA-WebFace 解压到这里）
+│   │   └── CASIA-WebFace/
+│   │       ├── 0000001/
+│   │       └── ...
+│   ├── aligned/             # 预处理后的数据集（脚本自动生成）
+│   │   ├── train/
+│   │   └── val/
+│   └── register/            # 门禁注册数据
+├── models/saved/            # 训练好的模型
+├── collect_data.py          # 数据收集工具
+├── preprocess.py            # CASIA-WebFace 预处理脚本
+├── train.py                 # 训练脚本
+├── inference.py             # 推理模块
+└── main.py                  # 训练平台入口
+```
 
 ## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-pip install torch torchvision opencv-python pillow numpy
+pip install -r requirements.txt
 ```
 
-### 2. 收集数据
+### 2. 下载 CASIA-WebFace 数据集
 
-```bash
-# 从摄像头收集（每人 50 张）
-python trainer/collect_data.py --mode camera --name "张三" --num 50
+CASIA-WebFace 是中科院公开的人脸数据集，包含 **10,575 人、494,414 张**图片。
 
-# 从文件夹收集
-python trainer/collect_data.py --mode folder --name "张三" --source "path/to/photos"
+**下载方式：**
+- 官方地址：http://www.cbsr.ia.ac.cn/english/CASIA-WebFace-Database.html
+- 或在 Kaggle 搜索 "CASIA-WebFace"
 
-# 划分训练集和测试集
-python trainer/collect_data.py --mode split
-
-# 查看数据集信息
-python trainer/collect_data.py --mode info
+**下载后解压到：**
+```
+trainer/data/raw/CASIA-WebFace/
+├── 0000001/
+│   ├── 001.jpg
+│   └── ...
+├── 0000002/
+└── ...
 ```
 
-### 3. 训练模型
+### 3. 预处理数据集
+
+使用 YOLO 检测人脸并裁剪对齐到 112×112：
 
 ```bash
-# 默认训练 50 轮
-python trainer/train.py
+# 检查数据集
+python trainer/preprocess.py --check
+
+# 开始预处理（默认使用 YOLO）
+python trainer/preprocess.py
+
+# 使用 face_recognition 检测（如果 YOLO 不可用）
+python trainer/preprocess.py --method face_recognition
 
 # 自定义参数
-python trainer/train.py --epochs 100 --batch-size 64 --lr 0.001
+python trainer/preprocess.py --raw-dir trainer/data/raw/CASIA-WebFace \
+                             --output-dir trainer/data/aligned \
+                             --size 112 --val-ratio 0.1
 ```
 
-### 4. 测试识别
+预处理完成后，数据在 `trainer/data/aligned/` 中：
+```
+trainer/data/aligned/
+├── train/          # 训练集（90%）
+│   ├── 0000001/    # 112×112 对齐后的人脸
+│   └── ...
+└── val/            # 验证集（10%）
+    ├── 0000001/
+    └── ...
+```
+
+### 4. 训练模型
+
+```bash
+# 命令行训练
+python trainer/train.py --data trainer/data/aligned --epochs 50 --batch-size 64
+
+# 或使用 GUI 训练平台（推荐）
+python 启动_训练平台.py
+```
+
+**训练参数说明：**
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| epochs | 50 | 训练轮数 |
+| batch-size | 32 | 批次大小 |
+| lr | 0.001 | 学习率 |
+| --cpu | - | 强制使用 CPU |
+
+### 5. 测试识别
 
 ```bash
 # 打开摄像头测试
 python trainer/inference.py
 ```
 
-## 数据目录结构
-
-```
-trainer/data/
-├── 张三/
-│   ├── 0000.jpg
-│   ├── 0001.jpg
-│   └── ...
-├── 李四/
-│   ├── 0000.jpg
-│   └── ...
-├── train/
-│   ├── 张三/
-│   └── 李四/
-├── test/
-│   ├── 张三/
-│   └── 李四/
-└── dataset_info.json
-```
-
 ## 模型结构
 
-使用 MobileFaceNet（轻量级人脸识别网络）：
-- 输入: 112x112 RGB 图片
+**MobileFaceNet** — 轻量级人脸识别网络：
+- 输入: 112×112 RGB 图片
 - 输出: 128 维嵌入向量
-- 参数量: ~1M（适合移动端部署）
+- 参数量: ~1M
+- 基于 MobileNetV2 倒残差结构
 
-## 损失函数
-
-使用 ArcFace Loss（角度间隔损失）：
-- 增大类间距离
-- 缩小类内距离
-- 提高识别准确率
+**ArcFace Loss** — 角度间隔损失函数：
+- 增大类间距离，缩小类内距离
+- s=30.0（缩放因子），m=0.50（角度间隔）
 
 ## 训练结果
 
@@ -93,4 +133,18 @@ trainer/data/
 
 ## 集成到门禁系统
 
-训练完成后，修改 `common/config.py` 中的配置即可使用自训练模型。
+训练完成后，门禁系统会自动加载 `trainer/models/saved/` 中的模型。
+在 `gate/access_control.py` 中，系统优先使用训练模型进行识别，
+置信度不够时回退到 face_recognition 库。
+
+## 数据收集（可选）
+
+如果只想用少量人员数据训练：
+
+```bash
+# 从摄像头收集（每人 50 张）
+python trainer/collect_data.py --mode camera --name "张三" --num 50
+
+# 从文件夹收集
+python trainer/collect_data.py --mode folder --name "张三" --source "path/to/photos"
+```

@@ -6,3 +6,4 @@
 from .database import Database
 from .user_manager import UserManager
 from .config import *
+from . import theme

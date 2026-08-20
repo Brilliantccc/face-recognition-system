@@ -8,16 +8,28 @@ import os
 import sys
 import json
 import cv2
-import torch
 import numpy as np
-from PIL import Image
-from torchvision import transforms
 from typing import List, Tuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from trainer.models.facenet import MobileFaceNet
-from common.config import USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE
+# 使用统一的 PyTorch 工具模块
+from common import torch_utils
+from common.config import USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE, FACE_INPUT_SIZE
+
+# 从 torch_utils 获取 PyTorch 组件
+torch = torch_utils.torch
+transforms = torch_utils.transforms
+Image = torch_utils.Image
+TORCH_AVAILABLE = torch_utils.TORCH_AVAILABLE
+
+# 导入模型
+MobileFaceNet = None
+if TORCH_AVAILABLE:
+    try:
+        from trainer.models.facenet import MobileFaceNet
+    except Exception as e:
+        print(f"Warning: Failed to import MobileFaceNet: {e}")
 
 
 class FaceRecognizer:
@@ -34,7 +46,11 @@ class FaceRecognizer:
         """
         self.model_dir = model_dir
         self.confidence_threshold = confidence_threshold
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # 使用 torch_utils 统一管理设备选择
+        self.device = torch_utils.get_device(prefer_gpu=True)
+        if self.device is None:
+            raise RuntimeError("PyTorch 未安装")
+        print(f"FaceRecognizer using device: {self.device}")
 
         # YOLO 配置
         self.use_yolo = use_yolo if use_yolo is not None else USE_YOLO_DETECTION
@@ -50,7 +66,7 @@ class FaceRecognizer:
 
         # 数据变换
         self.transform = transforms.Compose([
-            transforms.Resize((112, 112)),
+            transforms.Resize((FACE_INPUT_SIZE, FACE_INPUT_SIZE)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -69,13 +85,20 @@ class FaceRecognizer:
 
             model_size = model_size or YOLO_MODEL_SIZE
             conf = confidence or YOLO_CONFIDENCE
+            
+            # 自动检测 GPU 可用性
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
 
             self.yolo_detector = YOLOFaceDetector(
                 model_size=model_size,
                 confidence=conf,
-                device="cpu"
+                device=device
             )
-            print(f"YOLO detector initialized for FaceRecognizer")
+            print(f"YOLO detector initialized for FaceRecognizer (device: {device})")
         except ImportError as e:
             print(f"Warning: YOLO not available, using Haar Cascade: {e}")
             self.use_yolo = False
@@ -229,7 +252,7 @@ class FaceRecognizer:
 
     def register_face(self, name, image):
         """
-        注册新的人脸
+        注册新的人脸（保存到数据库）
         :param name: 人员姓名
         :param image: BGR格式的图片
         :return: 是否成功
@@ -248,22 +271,52 @@ class FaceRecognizer:
         face_tensor = self.preprocess_face(image, face_rect)
         embedding = self.get_embedding(face_tensor)
 
-        # 存储嵌入向量
-        if name not in self.embeddings:
-            self.embeddings[name] = embedding
-        else:
-            # 平均新的嵌入
-            self.embeddings[name] = (self.embeddings[name] + embedding) / 2
+        # 保存到数据库
+        try:
+            from common.database import Database
+            from common.user_manager import UserManager
+            from common.config import DATABASE_PATH, FACES_DIR
+            
+            db = Database(DATABASE_PATH)
+            user_manager = UserManager(db, FACES_DIR)
+            
+            # 检查用户是否已存在
+            existing_user = db.get_user_by_name(name)
+            if existing_user:
+                user_id = existing_user['id']
+                if not existing_user.get('is_active', True):
+                    db.restore_user(user_id)
+                    print(f"恢复已存在的用户: {name}")
+            else:
+                user_id = db.add_user(name)
+            
+            # 保存图片
+            user_dir = os.path.join(FACES_DIR, str(user_id) + "_" + name)
+            os.makedirs(user_dir, exist_ok=True)
+            
+            existing_count = len([f for f in os.listdir(user_dir) 
+                                if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
+            
+            image_path = os.path.join(user_dir, f"camera_{existing_count + 1}.jpg")
+            cv2.imwrite(image_path, image)
+            
+            # 保存到数据库
+            db.add_face_encoding(user_id, embedding, image_path)
+            
+            print(f"✅ 注册成功: {name} (ID: {user_id})")
+            return True
+            
+        except Exception as e:
+            print(f"❌ 注册失败: {e}")
+            return False
 
-        print(f"Face registered for: {name}")
-        return True
-
-    def save_embeddings(self, path="trainer/models/saved/known_faces.npy"):
+    def save_embeddings(self, path="data/db/known_faces.npy"):
         """保存已知人脸的嵌入向量"""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         np.save(path, self.embeddings)
         print(f"Embeddings saved to {path}")
 
-    def load_embeddings(self, path="trainer/models/saved/known_faces.npy"):
+    def load_embeddings(self, path="data/db/known_faces.npy"):
         """加载已知人脸的嵌入向量"""
         if os.path.exists(path):
             self.embeddings = np.load(path, allow_pickle=True).item()
@@ -307,35 +360,46 @@ class FaceDetector:
         return faces
 
 
-def test_recognition():
+def test_recognition(model_dir="trainer/models/saved"):
     """测试识别功能"""
-    recognizer = FaceRecognizer()
-
-    # 加载已知人脸
-    recognizer.load_embeddings()
+    recognizer = FaceRecognizer(model_dir=model_dir)
 
     # 打开摄像头
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         cap = cv2.VideoCapture(0)
 
-    print("Press SPACE to register current face, ESC to exit")
+    print("\n" + "=" * 50)
+    print("人脸识别测试")
+    print("=" * 50)
+    print("操作说明:")
+    print("  SPACE - 拍照并注册人脸")
+    print("  ESC   - 退出")
+    print("=" * 50 + "\n")
+
+    current_name = None
+    registering = False
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # 识别
-        results = recognizer.recognize(frame)
+        # 检测人脸
+        faces = recognizer.detect_faces(frame)
 
-        # 绘制结果
-        for name, confidence, (x, y, w, h) in results:
-            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+        # 绘制人脸框
+        for (x, y, w, h) in faces:
+            color = (0, 255, 0) if not registering else (0, 255, 255)
             cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
-            text = f"{name}: {confidence:.2%}" if name != "Unknown" else "Unknown"
-            cv2.putText(frame, text, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        # 显示状态信息
+        if registering:
+            cv2.putText(frame, f"Registering: {current_name}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        else:
+            cv2.putText(frame, "Press SPACE to register", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
         cv2.imshow("Face Recognition Test", frame)
 
@@ -344,14 +408,46 @@ def test_recognition():
         if key == 27:  # ESC
             break
         elif key == 32:  # SPACE
-            name = input("Enter name for registration: ")
+            # 暂停摄像头，等待输入姓名
+            registering = True
+            cap.release()
+            cv2.destroyAllWindows()
+            
+            print("\n" + "=" * 50)
+            name = input("请输入姓名 (或按 Enter 取消): ").strip()
             if name:
-                recognizer.register_face(name, frame)
-                recognizer.save_embeddings()
+                print(f"正在注册: {name}...")
+                # 重新打开摄像头拍照
+                cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(0)
+                
+                ret, frame = cap.read()
+                if ret:
+                    success = recognizer.register_face(name, frame)
+                    if success:
+                        print(f"✅ 注册成功: {name}")
+                    else:
+                        print(f"❌ 注册失败")
+            else:
+                print("已取消")
+            
+            registering = False
+            # 重新打开摄像头
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(0)
 
     cap.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    test_recognition()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Face Recognition Test")
+    parser.add_argument("--model-dir", type=str, default="trainer/models/saved",
+                       help="模型目录")
+    
+    args = parser.parse_args()
+    test_recognition(args.model_dir)

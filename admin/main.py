@@ -9,6 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtGui import QFont
 from gui.admin_window import AdminWindow
 
 
@@ -24,6 +25,10 @@ def main():
 
     # 设置应用样式
     app.setStyle("Fusion")
+
+    # 设置默认字体
+    font = QFont("Microsoft YaHei", 10)
+    app.setFont(font)
 
     # 创建主窗口
     window = AdminWindow()

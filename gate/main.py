@@ -9,29 +9,31 @@ import os
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, root_dir)
 
-# 确保 trainer 目录也在路径中
-trainer_dir = os.path.join(root_dir, 'trainer')
-if trainer_dir not in sys.path:
-    sys.path.insert(0, trainer_dir)
+# 确保 gate 目录也在路径中
+gate_dir = os.path.dirname(os.path.abspath(__file__))
+if gate_dir not in sys.path:
+    sys.path.insert(0, gate_dir)
 
-# 尝试导入 torch（在其他模块之前）
-try:
-    import torch
-    print(f"Torch loaded: {torch.__version__}")
-except Exception as e:
-    print(f"Warning: torch not available: {e}")
+# 使用统一的 PyTorch 工具模块
+from common import torch_utils
+if torch_utils.TORCH_AVAILABLE:
+    print(f"Torch loaded: {torch_utils.torch.__version__}")
+    print(f"CUDA available: {torch_utils.CUDA_AVAILABLE}")
+else:
+    print("Warning: PyTorch not available")
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtGui import QFont
 from gui.gate_window import GateWindow
 
 
 def main():
     """主函数"""
     print("=" * 50)
-    print("Face Recognition Access Control System v2.0")
+    print("人脸识别门禁系统 v2.0")
     print("=" * 50)
-    print("Starting system...")
-    print("Please ensure camera is connected")
+    print("正在启动系统...")
+    print("请确保摄像头已连接")
     print("=" * 50)
 
     # 创建Qt应用
@@ -39,6 +41,10 @@ def main():
 
     # 设置应用样式
     app.setStyle("Fusion")
+
+    # 设置默认字体
+    font = QFont("Microsoft YaHei", 10)
+    app.setFont(font)
 
     # 创建主窗口
     window = GateWindow()

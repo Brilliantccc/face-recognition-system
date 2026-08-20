@@ -12,29 +12,6 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# 尝试导入 torch（在其他模块之前）
-torch = None
-MobileFaceNet = None
-Image = None
-ImageDraw = None
-ImageFont = None
-transforms = None
-TORCH_AVAILABLE = False
-
-try:
-    import torch
-    from PIL import Image, ImageDraw, ImageFont
-    from torchvision import transforms
-
-    trainer_dir = os.path.join(project_root, 'trainer')
-    if trainer_dir not in sys.path:
-        sys.path.insert(0, trainer_dir)
-    from trainer.models.facenet import MobileFaceNet
-    TORCH_AVAILABLE = True
-    print("Torch loaded successfully")
-except Exception as e:
-    print(f"Warning: torch not available: {e}")
-
 import cv2
 import numpy as np
 import face_recognition
@@ -43,7 +20,29 @@ import time
 from typing import Tuple, Optional, List
 
 from common.user_manager import UserManager
-from common.config import FACE_RECOGNITION_TOLERANCE, USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE
+from common.config import FACE_RECOGNITION_TOLERANCE, USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE, FACE_INPUT_SIZE, STRICT_REGISTRATION_ONLY
+from common import torch_utils
+
+# 从 torch_utils 获取 PyTorch 组件
+torch = torch_utils.torch
+TORCH_AVAILABLE = torch_utils.TORCH_AVAILABLE
+MobileFaceNet = None
+
+if TORCH_AVAILABLE:
+    try:
+        from trainer.models.facenet import MobileFaceNet
+    except Exception as e:
+        print(f"Warning: Failed to import MobileFaceNet: {e}")
+        TORCH_AVAILABLE = False
+
+
+def imread_safe(filepath):
+    """读取图片，支持中文路径（Windows）"""
+    try:
+        data = np.fromfile(filepath, dtype=np.uint8)
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
 
 
 class AccessControl:
@@ -75,18 +74,18 @@ class AccessControl:
         self.use_trained_model = use_trained_model and TORCH_AVAILABLE
         self.trained_model = None
         self.trained_model_info = {}
+        self.trained_model_dir = None
         self.device = None
         self.transform = None
 
-        # 加载训练模型
-        if self.use_trained_model:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.transform = transforms.Compose([
-                transforms.Resize((112, 112)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # 设置设备和变换
+        if self.use_trained_model and TORCH_AVAILABLE:
+            self.device = torch_utils.get_device(prefer_gpu=True)
+            self.transform = torch_utils.transforms.Compose([
+                torch_utils.transforms.Resize((FACE_INPUT_SIZE, FACE_INPUT_SIZE)),
+                torch_utils.transforms.ToTensor(),
+                torch_utils.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
-            self._load_trained_model()
 
         if not TORCH_AVAILABLE:
             print("Running in face_recognition mode (YOLO and trained model disabled)")
@@ -110,10 +109,13 @@ class AccessControl:
         self._pil_font = None
         self._pil_font_small = None
 
+        # 注册用户 embedding 缓存
+        self.registered_embeddings = {}  # {name: embedding_tensor}
+
         # 加载已知人脸特征
         self.load_known_faces()
 
-        # 加载训练模型
+        # 加载训练模型（只调用一次）
         if self.use_trained_model:
             self._load_trained_model()
 
@@ -124,13 +126,20 @@ class AccessControl:
 
             model_size = model_size or YOLO_MODEL_SIZE
             conf = confidence or YOLO_CONFIDENCE
+            
+            # 自动检测 GPU 可用性
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
 
             self.yolo_detector = YOLOFaceDetector(
                 model_size=model_size,
                 confidence=conf,
-                device="cpu"  # 可根据需要改为 "cuda"
+                device=device
             )
-            print(f"YOLO detector initialized (model: yolov8{model_size}, confidence: {conf})")
+            print(f"YOLO detector initialized (model: yolov8{model_size}, confidence: {conf}, device: {device})")
         except ImportError as e:
             print(f"Warning: YOLO not available, falling back to face_recognition: {e}")
             self.use_yolo = False
@@ -139,140 +148,244 @@ class AccessControl:
             self.use_yolo = False
 
     def _load_trained_model(self):
-        """加载训练好的 MobileFaceNet 模型"""
-        if not TORCH_AVAILABLE:
+        """加载训练好的 MobileFaceNet 模型（自动查找最新模型）"""
+        if not TORCH_AVAILABLE or MobileFaceNet is None:
             self.use_trained_model = False
             return
 
-        # 优先使用带分类头的模型
-        model_path = "trainer/models/saved/best_model.pth"
-        info_path = "trainer/models/saved/model_info.json"
+        models_dir = "trainer/models/saved"
+        model_path = None
 
-        if not os.path.exists(model_path):
-            model_path = "trainer/models/saved/inference_model.pth"
+        # 优先查找带版本号的目录中的 inference_model.pth
+        if os.path.exists(models_dir):
+            version_dirs = sorted(
+                [d for d in os.listdir(models_dir) if os.path.isdir(os.path.join(models_dir, d))],
+                key=lambda d: os.path.getmtime(os.path.join(models_dir, d)),
+                reverse=True
+            )
+            for vdir in version_dirs:
+                candidate = os.path.join(models_dir, vdir, "inference_model.pth")
+                if os.path.exists(candidate):
+                    model_path = os.path.join(models_dir, vdir)
+                    break
 
-        if not os.path.exists(model_path):
-            print(f"Warning: Trained model not found at {model_path}")
+        if model_path is None:
+            print("Warning: No trained model found")
             self.use_trained_model = False
             return
+
+        self.load_model_from_dir(model_path)
+
+    def _sync_users_with_model(self):
+        """
+        [已禁用] 同步数据库用户与训练模型类别
+        为确保门禁安全，不再自动将模型类别用户添加到数据库。
+        所有用户必须通过管理员系统手动注册。
+        """
+        # 安全模式下不自动同步，防止非授权用户被添加
+        if STRICT_REGISTRATION_ONLY:
+            print("Strict mode: auto-sync disabled. Users must be registered via admin.")
+            return
+
+        idx_to_class = self.trained_model_info.get('idx_to_class', {})
+        for _, name in idx_to_class.items():
+            existing_user = self.user_manager.db.get_user_by_name(name)
+            if not existing_user:
+                user_id = self.user_manager.db.add_user(name)
+                print(f"Auto-added user: {name} (ID: {user_id})")
+
+    def get_available_models(self) -> list:
+        """获取所有可用的模型列表"""
+        models_dir = "trainer/models/saved"
+        available = []
+        if not os.path.exists(models_dir):
+            return available
+        for name in sorted(os.listdir(models_dir)):
+            model_dir = os.path.join(models_dir, name)
+            if os.path.isdir(model_dir):
+                has_inference = os.path.exists(os.path.join(model_dir, "inference_model.pth"))
+                has_best = os.path.exists(os.path.join(model_dir, "best_model.pth"))
+                if has_inference or has_best:
+                    info_path = os.path.join(model_dir, "model_info.json")
+                    num_classes = "?"
+                    if os.path.exists(info_path):
+                        import json
+                        with open(info_path, 'r', encoding='utf-8') as f:
+                            info = json.load(f)
+                            num_classes = info.get('num_classes', '?')
+                    available.append({
+                        'name': name,
+                        'path': model_dir,
+                        'num_classes': num_classes
+                    })
+        return available
+
+    def load_model_from_dir(self, model_dir: str) -> bool:
+        """从指定目录加载模型"""
+        import json
+
+        inference_path = os.path.join(model_dir, "inference_model.pth")
+        best_path = os.path.join(model_dir, "best_model.pth")
+        info_path = os.path.join(model_dir, "model_info.json")
+
+        # inference_model.pth 没有分类头，适合 embedding 匹配
+        model_file = inference_path if os.path.exists(inference_path) else best_path
+        if not os.path.exists(model_file):
+            print(f"Warning: No model file in {model_dir}")
+            return False
 
         try:
-            import json
+            checkpoint = torch_utils.load_model_checkpoint(model_file, map_location=self.device)
 
-            # 加载模型
-            checkpoint = torch.load(model_path, map_location=self.device)
-
-            # 检查是否有分类头
-            num_classes = checkpoint.get('num_classes', None)
-            has_classifier = num_classes is not None and num_classes > 0
-
+            # 始终用无分类头的模型，通过 embedding 余弦相似度识别
             self.trained_model = MobileFaceNet(
-                embedding_size=checkpoint['embedding_size'],
-                num_classes=num_classes if has_classifier else None
+                embedding_size=checkpoint.get('embedding_size', 128),
+                num_classes=None  # 不加载分类头
             ).to(self.device)
 
-            self.trained_model.load_state_dict(checkpoint['model_state_dict'])
+            # 只加载模型权重（过滤掉可能存在的 classifier 权重）
+            state_dict = checkpoint['model_state_dict']
+            filtered = {k: v for k, v in state_dict.items() if not k.startswith('classifier')}
+            self.trained_model.load_state_dict(filtered, strict=False)
             self.trained_model.eval()
 
-            # 加载类别信息（优先使用 checkpoint 中的信息）
+            # 加载类别信息
             if 'idx_to_class' in checkpoint:
-                # checkpoint 中的 idx_to_class 使用整数键
                 self.trained_model_info = {
                     'idx_to_class': checkpoint['idx_to_class'],
                     'class_to_idx': checkpoint.get('class_to_idx', {}),
-                    'num_classes': num_classes,
+                    'num_classes': checkpoint.get('num_classes', len(checkpoint['idx_to_class'])),
                     'embedding_size': checkpoint.get('embedding_size', 128)
                 }
             elif os.path.exists(info_path):
                 with open(info_path, 'r', encoding='utf-8') as f:
                     self.trained_model_info = json.load(f)
 
-            # 确保数据库中有训练模型中的所有用户
+            self.trained_model_dir = model_dir
             self._sync_users_with_model()
 
-            print(f"Trained model loaded: {len(self.trained_model_info.get('idx_to_class', {}))} classes")
+            classes = len(self.trained_model_info.get('idx_to_class', {}))
+            print(f"Model loaded from {model_dir}: {classes} classes")
+
+            # 构建注册用户 embedding 缓存
+            self.build_registered_embeddings()
+            return True
 
         except Exception as e:
-            print(f"Warning: Failed to load trained model: {e}")
-            self.use_trained_model = False
-
-    def _sync_users_with_model(self):
-        """同步数据库用户与训练模型类别"""
-        idx_to_class = self.trained_model_info.get('idx_to_class', {})
-
-        for _, name in idx_to_class.items():
-            # 检查用户是否存在
-            existing_user = self.user_manager.db.get_user_by_name(name)
-            if not existing_user:
-                # 自动添加新用户
-                user_id = self.user_manager.db.add_user(name)
-                print(f"Auto-added user: {name} (ID: {user_id})")
+            print(f"Warning: Failed to load model from {model_dir}: {e}")
+            return False
 
     def _recognize_with_trained_model(self, face_img: np.ndarray) -> Tuple[str, float]:
         """
-        使用训练好的模型识别人脸
+        使用训练好的模型识别人脸（只匹配数据库中已注册的激活用户）
         :param face_img: 人脸图片 (BGR)
         :return: (姓名, 置信度)
         """
         if self.trained_model is None or self.transform is None:
             return "Unknown", 0.0
 
+        if not self.registered_embeddings:
+            return "Unknown", 0.0
+
         try:
-            import torch
             import torch.nn.functional as F
 
             # 预处理
             rgb_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb_img)
+            pil_img = torch_utils.Image.fromarray(rgb_img)
             tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
 
-            # 推理
+            # 提取 embedding
             with torch.no_grad():
-                result = self.trained_model(tensor)
+                embedding = self.trained_model(tensor)  # [1, 128]
+                embedding = F.normalize(embedding, p=2, dim=1)
 
-            # 获取类别信息
-            idx_to_class = self.trained_model_info.get('idx_to_class', {})
+            # 跟所有注册用户的 embedding 比较余弦相似度
+            best_name = "Unknown"
+            best_sim = -1.0
 
-            if self.trained_model.classifier is not None:
-                # 有分类头，直接输出分类结果
-                if isinstance(result, tuple):
-                    embeddings, logits = result
-                else:
-                    logits = result
+            for name, reg_emb in self.registered_embeddings.items():
+                sim = F.cosine_similarity(embedding, reg_emb.unsqueeze(0)).item()
+                if sim > best_sim:
+                    best_sim = sim
+                    best_name = name
 
-                probs = F.softmax(logits, dim=1)
-                confidence, predicted = probs.max(1)
-
-                class_idx = predicted.item()
-                confidence = confidence.item()
-
-                # 获取类别名称（支持整数键和字符串键）
-                name = idx_to_class.get(class_idx, idx_to_class.get(str(class_idx), "Unknown"))
-
-                # 训练模型置信度 >0.8 时才直接返回（高置信度才信任）
-                # 低置信度回退到 face_recognition，确保正确识别
-                if confidence > 0.8:
-                    return name, confidence
-
-            # 训练模型置信度不够，使用 face_recognition 辅助判断
-            face_encodings = face_recognition.face_encodings(rgb_img)
-
-            if face_encodings:
-                is_match, fr_name, fr_confidence, user_id = \
-                    self.user_manager.verify_user(face_encodings[0], self.tolerance)
-
-                if is_match:
-                    return fr_name, fr_confidence
+            # 置信度阈值：低于 0.40 视为未注册
+            if best_sim >= 0.40:
+                # 严格模式：验证用户是否在数据库中且已激活
+                if STRICT_REGISTRATION_ONLY:
+                    db_user = self.user_manager.db.get_user_by_name(best_name)
+                    if not db_user or not db_user.get('is_active', True):
+                        print(f"Rejected: '{best_name}' not in active DB users (sim={best_sim:.3f})")
+                        return "Unknown", best_sim
+                return best_name, best_sim
+            else:
+                return "Unknown", best_sim
 
         except Exception as e:
             print(f"Recognition error: {e}")
 
         return "Unknown", 0.0
 
+    def build_registered_embeddings(self):
+        """为所有注册用户的照片提取 embedding 缓存"""
+        if self.trained_model is None or self.transform is None:
+            return
+
+        self.registered_embeddings = {}
+        faces_dir = "data/faces"
+
+        if not os.path.exists(faces_dir):
+            print("Warning: data/faces/ not found, no registered users to cache")
+            return
+
+        import torch.nn.functional as F
+
+        for user_dir_name in os.listdir(faces_dir):
+            user_dir = os.path.join(faces_dir, user_dir_name)
+            if not os.path.isdir(user_dir):
+                continue
+
+            # 从目录名提取用户名（格式：ID_姓名 或 姓名）
+            name = user_dir_name
+            if "_" in user_dir_name:
+                name = user_dir_name.split("_", 1)[1]
+
+            # 收集该用户所有图片的 embedding
+            embeddings = []
+            valid_exts = {'.jpg', '.jpeg', '.png', '.bmp'}
+            for img_name in os.listdir(user_dir):
+                if os.path.splitext(img_name)[1].lower() not in valid_exts:
+                    continue
+                img_path = os.path.join(user_dir, img_name)
+                try:
+                    img = imread_safe(img_path)
+                    if img is None:
+                        continue
+                    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    pil_img = torch_utils.Image.fromarray(rgb_img)
+                    tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
+                    with torch.no_grad():
+                        emb = self.trained_model(tensor)
+                    embeddings.append(emb.squeeze(0))
+                except Exception:
+                    continue
+
+            if embeddings:
+                # 取所有图片 embedding 的平均值，作为该用户的代表向量
+                avg_emb = torch.stack(embeddings).mean(dim=0)
+                avg_emb = F.normalize(avg_emb, p=2, dim=0)
+                self.registered_embeddings[name] = avg_emb
+
+        print(f"Cached embeddings for {len(self.registered_embeddings)} registered users")
+
     def load_known_faces(self):
         """加载已知人脸特征"""
         self.user_manager.reload_cache()
         print(f"Loaded {len(self.user_manager._cached_encodings)} face encodings")
+        # 重建注册用户 embedding 缓存
+        if self.use_trained_model and self.trained_model is not None:
+            self.build_registered_embeddings()
 
     def reload_known_faces(self):
         """重新加载已知人脸特征（用户更新后调用）"""
@@ -285,8 +398,9 @@ class AccessControl:
         if size == 16 and self._pil_font_small:
             return self._pil_font_small
 
-        if TORCH_AVAILABLE:
+        if TORCH_AVAILABLE and torch_utils.Image is not None:
             try:
+                from PIL import ImageFont
                 font = ImageFont.truetype("msyh.ttc", size)
             except:
                 font = ImageFont.load_default()
@@ -393,8 +507,9 @@ class AccessControl:
                     cv2.rectangle(processed_frame, (left, bottom - 50), (right, bottom), color, cv2.FILLED)
 
                     # 使用 PIL 绘制中文文字
-                    if TORCH_AVAILABLE:
-                        pil_img = Image.fromarray(cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB))
+                    if TORCH_AVAILABLE and torch_utils.Image is not None:
+                        from PIL import ImageDraw
+                        pil_img = torch_utils.Image.fromarray(cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB))
                         pil_draw = ImageDraw.Draw(pil_img)
 
                         # 使用缓存的字体
@@ -561,3 +676,12 @@ class AccessControl:
         :return: 已知人脸数量
         """
         return len(self.user_manager._cached_encodings)
+
+    def get_active_users_count(self) -> int:
+        """获取数据库中已激活的注册用户数量"""
+        users = self.user_manager.get_all_users(active_only=True)
+        return len(users)
+
+    def is_strict_mode(self) -> bool:
+        """是否为严格模式（只允许数据库注册用户通过）"""
+        return STRICT_REGISTRATION_ONLY

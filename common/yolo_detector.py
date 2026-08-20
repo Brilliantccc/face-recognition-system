@@ -37,8 +37,6 @@ class YOLOFaceDetector:
         try:
             from ultralytics import YOLO
 
-            # 使用 YOLOv8 人脸检测模型
-            # 可以使用预训练的人脸检测模型或通用目标检测模型
             model_name = f"yolov8{self.model_size}.pt"
 
             # 检查是否有本地的人脸检测模型
@@ -50,7 +48,6 @@ class YOLOFaceDetector:
                 self.model = YOLO(local_model_path)
                 print(f"Loaded local face model: {local_model_path}")
             else:
-                # 使用通用 YOLOv8 模型（需要过滤 person 类别）
                 self.model = YOLO(model_name)
                 print(f"Loaded YOLO model: {model_name}")
 
@@ -83,11 +80,8 @@ class YOLOFaceDetector:
             boxes = result.boxes
             if boxes is not None:
                 for box in boxes:
-                    # 获取边界框坐标
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                     conf = float(box.conf[0])
-
-                    # 检查是否为人脸（如果是通用模型，需要过滤）
                     cls = int(box.cls[0])
                     if self._is_face_class(cls):
                         faces.append((x1, y1, x2, y2, conf))
@@ -95,22 +89,11 @@ class YOLOFaceDetector:
         return faces
 
     def _is_face_class(self, class_id: int) -> bool:
-        """
-        检查类别是否为人脸
-        :param class_id: 类别 ID
-        :return: 是否是人脸类别
-        """
-        # 如果使用的是专门的人脸检测模型，所有检测结果都是人脸
-        # 如果使用的是通用模型，person 类别 ID 为 0
-        # 这里我们可以根据需要调整
-        return True  # 默认返回 True，假设使用的是人脸专用模型
+        """检查类别是否为人脸"""
+        return True
 
     def detect_with_landmarks(self, image: np.ndarray) -> List[dict]:
-        """
-        检测人脸并返回详细信息
-        :param image: BGR 格式的图片
-        :return: 人脸信息列表
-        """
+        """检测人脸并返回详细信息"""
         if self.model is None:
             return []
 
@@ -154,7 +137,6 @@ class YOLOFaceDetector:
         x1, y1, x2, y2 = bbox
         h, w = image.shape[:2]
 
-        # 添加边距
         margin_x = int((x2 - x1) * margin)
         margin_y = int((y2 - y1) * margin)
 
@@ -177,13 +159,6 @@ class YOLODetectorFactory:
     @staticmethod
     def create_detector(model_size: str = "n", confidence: float = 0.5,
                        device: str = "cpu") -> YOLOFaceDetector:
-        """
-        创建 YOLO 检测器实例
-        :param model_size: 模型大小
-        :param confidence: 置信度阈值
-        :param device: 推理设备
-        :return: YOLOFaceDetector 实例
-        """
         return YOLOFaceDetector(
             model_size=model_size,
             confidence=confidence,
@@ -191,8 +166,7 @@ class YOLODetectorFactory:
         )
 
 
-def test_yolo_detector():
-    """测试 YOLO 检测器"""
+if __name__ == "__main__":
     detector = YOLOFaceDetector(model_size="n", confidence=0.5)
 
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
@@ -221,7 +195,3 @@ def test_yolo_detector():
 
     cap.release()
     cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    test_yolo_detector()

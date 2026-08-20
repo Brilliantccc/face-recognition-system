@@ -28,14 +28,34 @@ env/
 Thumbs.db
 Desktop.ini
 
-# Project specific
-data/db/*.db
-data/faces/
-trainer/models/saved/
+# Project specific - 数据和模型（不可开源）
+data/
 trainer/data/
+trainer/models/saved/
 *.pth
 *.pt
 *.onnx
+*.npy
+
+# YOLO 预训练模型
+yolov8*.pt
 
 # Logs
 *.log
+
+# Documentation
+docs/
+
+# Claude / 个人配置（不可开源）
+.claude/
+.codegraph/
+CLAUDE.md
+PYTORCH_FIX.md
+README_LAUNCHER.md
+
+# 临时文件和调试文件
+*.tmp
+*.bak
+*.swp
+*.swo
+*~

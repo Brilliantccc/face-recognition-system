@@ -162,22 +162,64 @@ class Database:
 
     def delete_user(self, user_id: int) -> bool:
         """
-        删除用户
+        软删除用户（标记为不活跃）
         :param user_id: 用户ID
         :return: 是否删除成功
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # 先删除人脸特征
-        cursor.execute("DELETE FROM face_encodings WHERE user_id = ?", (user_id,))
-
-        # 再删除用户
-        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        # 软删除：标记为不活跃
+        cursor.execute("UPDATE users SET is_active = 0 WHERE id = ?", (user_id,))
         deleted = cursor.rowcount > 0
         conn.commit()
         conn.close()
         return deleted
+
+    def delete_face_encodings(self, user_id: int) -> bool:
+        """
+        删除用户的所有人脸特征记录
+        :param user_id: 用户ID
+        :return: 是否删除成功
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM face_encodings WHERE user_id = ?", (user_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def restore_user(self, user_id: int) -> bool:
+        """
+        恢复已删除的用户
+        :param user_id: 用户ID
+        :return: 是否恢复成功
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET is_active = 1 WHERE id = ?", (user_id,))
+        restored = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return restored
+
+    def get_user_by_name(self, name: str) -> Optional[Dict]:
+        """
+        根据姓名获取用户（包括不活跃的）
+        :param name: 用户姓名
+        :return: 用户信息
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            columns = [desc[0] for desc in cursor.description]
+            return dict(zip(columns, row))
+        return None
 
     def get_user(self, user_id: int) -> Optional[Dict]:
         """
