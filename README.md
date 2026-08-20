@@ -1,6 +1,6 @@
-# 人脸识别门禁系统 v3.1
+# 人脸识别门禁系统 v3.2
 
-基于 MobileFaceNet + ArcFace Loss 的人脸识别门禁系统，支持自训练模型、多模型切换。
+基于 face_recognition (dlib) 和 MobileFaceNet + ArcFace Loss 的人脸识别门禁系统，支持双模型切换、YOLO 检测。
 
 ## 系统架构
 
@@ -15,12 +15,14 @@
 │
 ├── admin/                         # 人事管理模块
 │   ├── main.py                   # 管理程序入口
+│   ├── generate_encodings.py     # 人脸编码生成（支持双模型）
+│   ├── batch_register.py         # 批量导入注册
 │   └── gui/admin_window.py       # 管理界面
 │
 ├── gate/                          # 门禁系统模块
 │   ├── main.py                   # 门禁程序入口
 │   ├── access_control.py         # 门禁控制逻辑
-│   └── gui/gate_window.py        # 门禁界面
+│   └── gui/gate_window.py        # 门禁界面（沉浸式 Kiosk 风格）
 │
 ├── trainer/                       # 训练模块（命令行）
 │   ├── train_optimal.py          # 训练脚本（推荐）
@@ -45,12 +47,6 @@
 pip install -r requirements.txt
 ```
 
-GPU 版 PyTorch（推荐）：
-
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-```
-
 ## 快速上手
 
 ### 第一步：注册人员
@@ -71,7 +67,19 @@ python admin/main.py
 
 > 💡 批量导入和导入 uploads 只录入姓名。如需补充工号、部门、电话，在列表中选中员工后点击"✏️ 编辑选中员工"。
 
-### 第二步：启动门禁
+### 第二步：生成编码
+
+注册人员后，需要为人脸生成编码（特征向量）：
+
+1. 在人事管理系统中点击 **"🧠 生成编码"**
+2. 选择编码模型：
+   - **face_recognition**（推荐）：基于 dlib，128维，适合门禁验证
+   - **训练模型**：MobileFaceNet，256维，适合分类任务
+3. 等待生成完成
+
+> ⚠️ 切换模型时会清除旧编码并重新生成。同一模型重复生成会跳过（除非强制）。
+
+### 第三步：启动门禁
 
 启动门禁系统（双击 `启动门禁系统.bat` 或命令行）：
 
@@ -80,19 +88,61 @@ python gate/main.py
 ```
 
 - 门禁启动后自动加载已注册用户
-- 在下拉框选择训练好的模型（如有）
 - 注册用户自动通过，未注册人员自动拒绝
+- 可在设置面板切换人脸检测方式（face_recognition / YOLO）
 
 > 🔒 严格安全模式：只允许数据库中已激活的用户通过，即使模型识别到相似人脸，若不在数据库中也会被拒绝。
 
-## 自己训练模型
+## 人脸检测方式
 
-> 门禁系统内置的默认识别基于 face_recognition 库，开箱即用。
-> 如果你需要更高精度的识别，可以训练自己的 MobileFaceNet 模型。
+| 方式 | 说明 | 适用场景 |
+|------|------|---------|
+| **face_recognition** | 基于 dlib，CPU 运行 | 默认方式，稳定可靠 |
+| **YOLO** | 基于 YOLOv8，支持 GPU 加速 | 需要更快检测速度时 |
+
+在门禁界面右上角设置面板中切换检测方式。
+
+## 人脸编码模型
+
+| 模型 | 维度 | 说明 |
+|------|------|------|
+| **face_recognition** | 128维 | 基于 dlib，专为验证任务设计，推荐用于门禁 |
+| **训练模型** | 256维 | MobileFaceNet + ArcFace，为分类任务设计 |
+
+> ⚠️ 两种模型的编码维度不同，切换模型时需要重新生成编码。
+
+### 预训练模型下载
+
+如果你不想自己训练，可以直接下载预训练模型：
+
+| 模型 | 说明 | 下载地址 |
+|------|------|---------|
+| facenet-optimal-v2 | MobileFaceNet + ArcFace，10575类 | [ModelScope](https://www.modelscope.cn/models/Brilliantccc/facenet-optimal-v2) |
+
+下载后将模型文件放到 `trainer/models/saved/optimal_v2/` 目录下即可。
+
+！！！注意！！！作者训练出的模型更适合人脸分类，可能不太适合本项目，使用后的实际效果也不好，所以本项目下的训练方式也不适合，慎用！！
+
+## 自己训练模型（慎用）
+
+> 门禁系统支持两种识别方式，可在下拉框自由切换：
+> - **face_recognition**（内置，无需训练，开箱即用）
+> - **MobileFaceNet**（你训练的模型，精度更高）
+>
+> 有训练模型时默认用 MobileFaceNet，没有时自动使用 face_recognition。
+
+### 置信度说明
+
+| 识别方式 | 置信度含义 | 通过条件 |
+|---------|-----------|---------|
+| 训练模型 | 余弦相似度（0~1） | 相似度 ≥ 训练时的最佳阈值 |
+| face_recognition | 欧氏距离 | 距离 ≤ 0.6 |
+
+训练模型的阈值会在训练时自动计算并保存到 `model_info.json`，显示在门禁状态栏中。
 
 ### 前置条件
 
-- 已安装 PyTorch（见上方"安装依赖"）
+- 已安装 PyTorch
 - 有 GPU 可用（推荐，CPU 也能训练但很慢）
 
 ### 第一步：准备训练数据
@@ -222,9 +272,19 @@ python trainer/test_model.py --model-dir trainer/models/saved/最优模型目录
 配置文件位于 `common/config.py`：
 
 ```python
-FACE_RECOGNITION_TOLERANCE = 0.45   # 识别容差阈值
-CAMERA_INDEX = 0                    # 摄像头索引
-USE_YOLO_DETECTION = False          # 是否使用 YOLO
+# 人脸识别配置
+FACE_RECOGNITION_TOLERANCE = 0.6    # 识别容差阈值（face_recognition 推荐 0.6）
+FACE_DETECTION_MODEL = "hog"        # 人脸检测模型: "hog" (CPU快速) 或 "cnn" (GPU高精度)
+
+# YOLO 人脸检测配置
+USE_YOLO_DETECTION = False          # 是否使用 YOLO 进行人脸检测
+YOLO_MODEL_SIZE = "n"               # YOLO 模型大小: n/s/m/l/x
+YOLO_CONFIDENCE = 0.5               # YOLO 置信度阈值
+
+# 识别方式选择
+USE_TRAINED_MODEL = False           # 是否使用训练模型（False = 使用 face_recognition）
+
+# 门禁安全配置
 STRICT_REGISTRATION_ONLY = True     # 只允许数据库注册用户通过
 MIN_FACE_PHOTOS = 5                 # 快速注册最少照片数
 ```
@@ -235,6 +295,7 @@ MIN_FACE_PHOTOS = 5                 # 快速注册最少照片数
 2. 拍摄人脸时光线充足、正对摄像头
 3. 训练需要 PyTorch，推荐 GPU 加速
 4. 门禁严格模式下，只有通过人事管理系统注册的用户才能通过
+5. 切换编码模型后需要重新生成编码
 
 ## 许可证
 
@@ -246,6 +307,7 @@ MIN_FACE_PHOTOS = 5                 # 快速注册最少照片数
 
 ## 更新日志
 
+- **v3.2** — 双模型编码选择、YOLO+face_recognition 联合检测、沉浸式门禁界面、人事管理界面重构
 - **v3.1** — 快速注册、批量导入、严格安全模式、移除训练 GUI、修复中文路径
 - **v3.0** — 门禁多模型切换、embedding 余弦相似度识别
 - **v2.0** — 训练 GUI、断点续训
@@ -258,9 +320,3 @@ MIN_FACE_PHOTOS = 5                 # 快速注册最少照片数
 1. 代码符合项目风格
 2. 添加必要的注释
 3. 更新相关文档
-
-## 致谢
-
-- [face_recognition](https://github.com/ageitgey/face_recognition) - 人脸识别库
-- [YOLOv8](https://github.com/ultralytics/ultralytics) - 目标检测模型
-- [PyTorch](https://pytorch.org/) - 深度学习框架

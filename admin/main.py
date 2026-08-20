@@ -4,6 +4,10 @@
 
 import sys
 import os
+import multiprocessing
+
+# Windows 下必须在最开始调用 freeze_support()，否则子进程可能异常
+multiprocessing.freeze_support()
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

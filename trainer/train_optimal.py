@@ -436,7 +436,21 @@ class OptimalTrainer:
         final_checkpoint = os.path.join(self.model_dir, "checkpoint.pth")
         if os.path.exists(final_checkpoint):
             os.remove(final_checkpoint)
-            print("🗑️ 训练完成，已清理断点文件")
+            print("训练完成，已清理断点文件")
+
+        # 计算最佳阈值
+        best_threshold = self._find_best_threshold(model, val_loader, criterion)
+        print(f"最佳识别阈值: {best_threshold:.4f}")
+
+        # 保存阈值到 model_info.json
+        info_path = os.path.join(self.model_dir, "model_info.json")
+        if os.path.exists(info_path):
+            with open(info_path, 'r', encoding='utf-8') as f:
+                info = json.load(f)
+            info['best_threshold'] = best_threshold
+            info['best_val_acc'] = best_val_acc
+            with open(info_path, 'w', encoding='utf-8') as f:
+                json.dump(info, f, indent=2, ensure_ascii=False)
 
         history_path = os.path.join(self.model_dir, "training_history.json")
         with open(history_path, 'w') as f:
@@ -447,6 +461,57 @@ class OptimalTrainer:
         print("=" * 60)
 
         return history
+
+    def _find_best_threshold(self, model, val_loader, criterion):
+        """在验证集上搜索最佳识别阈值（最大化准确率）"""
+        import torch.nn.functional as F
+
+        model.eval()
+        criterion.eval()
+
+        all_cosines = []  # 所有余弦相似度
+        all_labels = []   # 标签（是否同一人）
+
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images = images.to(self.device, non_blocking=True)
+                labels = labels.to(self.device, non_blocking=True)
+
+                embeddings = model(images)
+                W = F.normalize(criterion.weight, p=2, dim=1)
+                cosine_scores = F.linear(embeddings, W)  # [B, num_classes]
+
+                # 对每个样本，取其真实类别的余弦分数（正样本）
+                for i in range(len(labels)):
+                    true_label = labels[i].item()
+                    pos_score = cosine_scores[i, true_label].item()
+                    # 负样本：除真实类别外的最大分数
+                    neg_scores = cosine_scores[i].clone()
+                    neg_scores[true_label] = -1.0
+                    neg_score = neg_scores.max().item()
+
+                    all_cosines.append(pos_score)
+                    all_labels.append(1)  # 正样本
+
+                    all_cosines.append(neg_score)
+                    all_labels.append(0)  # 负样本
+
+        all_cosines = np.array(all_cosines)
+        all_labels = np.array(all_labels)
+
+        # 搜索最佳阈值
+        best_acc = 0.0
+        best_threshold = 0.40  # 默认值
+
+        for threshold in np.arange(0.1, 0.95, 0.01):
+            pred_pos = all_cosines >= threshold
+            acc = (pred_pos == (all_labels == 1)).mean()
+            if acc > best_acc:
+                best_acc = acc
+                best_threshold = threshold
+
+        print(f"  阈值搜索结果: threshold={best_threshold:.4f}, acc={best_acc*100:.2f}%")
+        return float(best_threshold)
 
     def save_model(self, model, num_classes, class_to_idx, criterion, epoch):
         """保存模型"""

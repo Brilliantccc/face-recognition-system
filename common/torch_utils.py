@@ -30,6 +30,43 @@ GPU_MEMORY_GB = 0
 TORCH_TYPE = "none"  # "cuda", "cpu", "none"
 
 
+def _setup_dll_paths():
+    """
+    在导入 PyTorch 之前，将 torch 和 CUDA 的 DLL 目录加入搜索路径。
+    Windows 的 multiprocessing.spawn 模式下，子进程可能无法自动找到这些 DLL。
+    """
+    import site
+    if sys.platform != 'win32':
+        return
+
+    dll_dirs = []
+
+    # 1. torch 自带的 lib 目录（包含 c10.dll, torch_cpu.dll 等）
+    for sp in site.getsitepackages() + [site.getusersitepackages()]:
+        torch_lib = os.path.join(sp, 'torch', 'lib')
+        if os.path.isdir(torch_lib):
+            dll_dirs.append(torch_lib)
+
+    # 2. CUDA bin 目录（系统级安装）
+    cuda_root = os.environ.get('CUDA_PATH') or os.environ.get('CUDA_HOME')
+    if cuda_root:
+        cuda_bin = os.path.join(cuda_root, 'bin')
+        if os.path.isdir(cuda_bin):
+            dll_dirs.append(cuda_bin)
+
+    # 3. 将目录加入 PATH 和 DLL 搜索路径
+    for d in dll_dirs:
+        # os.add_dll_directory 需要绝对路径
+        d = os.path.abspath(d)
+        if d not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = d + ';' + os.environ.get('PATH', '')
+        if hasattr(os, 'add_dll_directory'):
+            try:
+                os.add_dll_directory(d)
+            except OSError:
+                pass
+
+
 def init_torch():
     """
     初始化 PyTorch 环境
@@ -41,6 +78,9 @@ def init_torch():
     # 检查是否是主进程（避免 DataLoader worker 重复打印）
     import multiprocessing
     is_main_process = multiprocessing.current_process().name == 'MainProcess'
+
+    # 在导入 torch 之前，确保 DLL 搜索路径正确（修复 Windows 子进程 DLL 加载问题）
+    _setup_dll_paths()
 
     # ========== 情况 1: 尝试导入 PyTorch ==========
     try:
@@ -95,6 +135,9 @@ def init_torch():
                 for mod_name in list(sys.modules.keys()):
                     if mod_name.startswith("torch"):
                         del sys.modules[mod_name]
+
+                # 重新设置 DLL 搜索路径（重试前再次确保）
+                _setup_dll_paths()
 
                 import torch as _torch
                 torch = _torch

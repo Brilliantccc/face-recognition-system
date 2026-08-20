@@ -47,6 +47,39 @@ GATE_STANDBY_BG = "#f0f2f5"
 GATE_STANDBY_BORDER = "#9aa0a6"
 GATE_STANDBY_TEXT = "#5f6368"
 
+# ============================================================
+# 人事管理后台主题
+# ============================================================
+
+ADMIN_HEADER_BG = "#1e293b"       # 深色顶栏
+ADMIN_HEADER_TEXT = "#f1f5f9"      # 顶栏文字
+ADMIN_ACCENT = "#3b82f6"           # 操作蓝
+ADMIN_ACCENT_HOVER = "#2563eb"
+ADMIN_TOOLBAR_BG = "#ffffff"       # 工具栏白底
+ADMIN_TOOLBAR_BORDER = "#e2e8f0"
+ADMIN_ROW_HOVER = "#f8fafc"
+ADMIN_ROW_ALT = "#fafbfc"
+ADMIN_DETAIL_BG = "#f8fafc"       # 底部详情区背景
+ADMIN_STAT_BG = "#f1f5f9"         # 统计条背景
+
+# ============================================================
+# 暗色沉浸式门禁主题（Kiosk 模式）
+# ============================================================
+
+KIOSK_BG = "#0a0a0f"              # 近纯黑背景
+KIOSK_SURFACE = "#12121a"         # 微抬表面
+KIOSK_OVERLAY = "rgba(0, 0, 0, 0.55)"  # 半透明遮罩
+
+# 状态色（更亮、更饱和，暗底上醒目）
+KIOSK_PASS = "#00e676"            # 通行绿
+KIOSK_PASS_GLOW = "rgba(0, 230, 118, 0.25)"
+KIOSK_REJECT = "#ff1744"          # 拒绝红
+KIOSK_REJECT_GLOW = "rgba(255, 23, 68, 0.25)"
+KIOSK_STANDBY = "#90a4ae"         # 待机灰蓝
+KIOSK_TEXT = "#e0e0e0"            # 主文字
+KIOSK_TEXT_DIM = "#6b7280"        # 次要文字
+KIOSK_ACCENT = "#4fc3f7"          # 强调蓝
+
 # 字体
 FONT_FAMILY = "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif"
 FONT_FAMILY_MONO = "'Consolas', 'Courier New', monospace"

@@ -220,6 +220,57 @@ class UserManager:
         self._invalidate_cache()
         return saved_count
 
+    def import_photos_from_folder(self, user_id: int, folder_path: str) -> dict:
+        """
+        从文件夹批量导入照片到已有用户（不依赖 dlib/face_recognition）
+        直接复制图片文件，后续通过"生成编码"功能生成人脸编码
+        :param user_id: 用户ID
+        :param folder_path: 图片文件夹路径
+        :return: {'success': int, 'skip': int, 'errors': list}
+        """
+        result = {'success': 0, 'skip': 0, 'errors': []}
+
+        user = self.db.get_user(user_id)
+        if not user:
+            raise ValueError(f"用户ID {user_id} 不存在")
+
+        if not os.path.isdir(folder_path):
+            raise ValueError(f"文件夹不存在: {folder_path}")
+
+        user_dir = self._get_user_dir(user_id, user['name'])
+        os.makedirs(user_dir, exist_ok=True)
+
+        valid_exts = {'.jpg', '.jpeg', '.png', '.bmp'}
+        existing_count = len([f for f in os.listdir(user_dir)
+                             if os.path.splitext(f)[1].lower() in valid_exts])
+
+        idx = 0
+        for fname in sorted(os.listdir(folder_path)):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in valid_exts:
+                continue
+
+            src_path = os.path.join(folder_path, fname)
+            try:
+                img_array = np.fromfile(src_path, dtype=np.uint8)
+                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if img is None:
+                    result['errors'].append(f"{fname}: 无法读取")
+                    continue
+
+                dst_path = os.path.join(user_dir, f"{existing_count + idx}.jpg")
+                _, encoded = cv2.imencode('.jpg', img)
+                encoded.tofile(dst_path)
+                idx += 1
+                result['success'] += 1
+            except Exception as e:
+                result['errors'].append(f"{fname}: {e}")
+
+        if result['success'] > 0:
+            self._invalidate_cache()
+
+        return result
+
     def delete_user(self, user_id: int, model_dir: str = None) -> bool:
         """
         删除用户（安全删除：删除图片 + 嵌入向量 + 标记不活跃）
@@ -261,6 +312,48 @@ class UserManager:
         if result:
             self._invalidate_cache()
             print(f"  ✅ 用户已删除: {user_name} (ID: {user_id})")
+        
+        return result
+
+    def hard_delete_user(self, user_id: int, model_dir: str = None) -> bool:
+        """
+        彻底删除用户（删除图片 + 嵌入向量 + 数据库记录）
+        日志中用户名会标记为"已删除"
+        :param user_id: 用户ID
+        :param model_dir: 模型目录（用于找到 known_faces.npy）
+        :return: 是否删除成功
+        """
+        user = self.db.get_user(user_id)
+        if not user:
+            return False
+        
+        user_name = user['name']
+        
+        # 1. 删除人脸图片文件
+        user_dir = self._get_user_dir(user_id, user_name)
+        if os.path.exists(user_dir):
+            import shutil
+            shutil.rmtree(user_dir)
+            print(f"  🗑️ 删除图片目录: {user_dir}")
+        
+        # 2. 从 known_faces.npy 中移除嵌入向量
+        if model_dir:
+            known_faces_path = os.path.join(model_dir, "known_faces.npy")
+        else:
+            known_faces_path = "data/db/known_faces.npy"
+        
+        if os.path.exists(known_faces_path):
+            embeddings = np.load(known_faces_path, allow_pickle=True).item()
+            if user_name in embeddings:
+                del embeddings[user_name]
+                np.save(known_faces_path, embeddings)
+                print(f"  🗑️ 从 known_faces.npy 移除: {user_name}")
+        
+        # 3. 彻底删除数据库记录
+        result = self.db.hard_delete_user(user_id)
+        if result:
+            self._invalidate_cache()
+            print(f"  ✅ 用户已彻底删除: {user_name} (ID: {user_id})")
         
         return result
 
@@ -352,6 +445,15 @@ class UserManager:
         fr = _get_face_recognition()
         if fr is None:
             return False, "Unknown", 0.0, -1
+
+        # 检查编码维度是否匹配
+        if len(self._cached_encodings) > 0:
+            cached_dim = self._cached_encodings[0].shape[0]
+            input_dim = face_encoding.shape[0]
+            if cached_dim != input_dim:
+                print(f"Warning: Encoding dimension mismatch (cached={cached_dim}, input={input_dim}), skipping face_recognition")
+                return False, "Unknown", 0.0, -1
+
         face_distances = fr.face_distance(self._cached_encodings, face_encoding)
 
         best_match_idx = np.argmin(face_distances)

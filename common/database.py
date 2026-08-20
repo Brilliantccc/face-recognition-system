@@ -176,6 +176,31 @@ class Database:
         conn.close()
         return deleted
 
+    def hard_delete_user(self, user_id: int) -> bool:
+        """
+        硬删除用户（从数据库彻底移除，日志中用户名改为"已删除"）
+        :param user_id: 用户ID
+        :return: 是否删除成功
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # 先删除人脸特征记录
+        cursor.execute("DELETE FROM face_encodings WHERE user_id = ?", (user_id,))
+
+        # 更新访问日志，保留记录但标记用户名
+        cursor.execute(
+            "UPDATE access_log SET user_name = user_name || ' [已删除]' WHERE user_id = ?",
+            (user_id,)
+        )
+
+        # 彻底删除用户记录
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
     def delete_face_encodings(self, user_id: int) -> bool:
         """
         删除用户的所有人脸特征记录
@@ -353,7 +378,7 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
-        return [(row[0], np.frombuffer(row[1], dtype=np.float64)) for row in rows]
+        return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
     def get_user_faces_with_id(self, user_id: int) -> List[Dict]:
         """

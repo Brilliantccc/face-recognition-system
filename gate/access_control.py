@@ -23,6 +23,10 @@ from common.user_manager import UserManager
 from common.config import FACE_RECOGNITION_TOLERANCE, USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE, FACE_INPUT_SIZE, STRICT_REGISTRATION_ONLY
 from common import torch_utils
 
+# 门禁控制参数
+DOOR_OPEN_DURATION = 5.0       # 开门持续时间（秒）
+DOOR_COOLDOWN = 3.0            # 关门后冷却时间（秒），防止重复触发
+
 # 从 torch_utils 获取 PyTorch 组件
 torch = torch_utils.torch
 TORCH_AVAILABLE = torch_utils.TORCH_AVAILABLE
@@ -48,7 +52,7 @@ def imread_safe(filepath):
 class AccessControl:
     def __init__(self, user_manager: UserManager, tolerance: float = None, gate_name: str = "Main Gate",
                  use_yolo: bool = None, yolo_model_size: str = None, yolo_confidence: float = None,
-                 use_trained_model: bool = True):
+                 use_trained_model: bool = False):
         """
         初始化门禁控制器
         :param user_manager: 用户管理器实例
@@ -57,7 +61,7 @@ class AccessControl:
         :param use_yolo: 是否使用 YOLO 进行人脸检测
         :param yolo_model_size: YOLO 模型大小
         :param yolo_confidence: YOLO 置信度阈值
-        :param use_trained_model: 是否使用训练好的模型进行识别
+        :param use_trained_model: 是否使用训练好的模型进行识别（默认 False，使用 face_recognition）
         """
         self.user_manager = user_manager
         self.tolerance = tolerance or FACE_RECOGNITION_TOLERANCE
@@ -102,6 +106,7 @@ class AccessControl:
         self.result_user = None
         self.result_confidence = 0.0
         self.frame_lock = threading.Lock()
+        self.model_lock = threading.Lock()  # 模型加载/切换锁
         self.last_process_time = 0
         self.process_interval = 0.3  # 处理间隔
 
@@ -111,6 +116,13 @@ class AccessControl:
 
         # 注册用户 embedding 缓存
         self.registered_embeddings = {}  # {name: embedding_tensor}
+
+        # 门禁开关状态
+        self.door_open = False
+        self.door_open_time = 0.0        # 开门时刻
+        self.door_cooldown_until = 0.0   # 冷却期截止时刻
+        self.on_door_open = None         # 回调：开门时触发
+        self.on_door_close = None        # 回调：关门时触发
 
         # 加载已知人脸特征
         self.load_known_faces()
@@ -198,6 +210,15 @@ class AccessControl:
         """获取所有可用的模型列表"""
         models_dir = "trainer/models/saved"
         available = []
+
+        # 始终添加 face_recognition 选项（兜底方案）
+        available.append({
+            'name': 'face_recognition',
+            'path': 'face_recognition',
+            'num_classes': None,
+            'is_builtin': True
+        })
+
         if not os.path.exists(models_dir):
             return available
         for name in sorted(os.listdir(models_dir)):
@@ -207,21 +228,29 @@ class AccessControl:
                 has_best = os.path.exists(os.path.join(model_dir, "best_model.pth"))
                 if has_inference or has_best:
                     info_path = os.path.join(model_dir, "model_info.json")
-                    num_classes = "?"
+                    num_classes = None
                     if os.path.exists(info_path):
                         import json
                         with open(info_path, 'r', encoding='utf-8') as f:
                             info = json.load(f)
-                            num_classes = info.get('num_classes', '?')
+                            num_classes = info.get('num_classes')
                     available.append({
                         'name': name,
                         'path': model_dir,
-                        'num_classes': num_classes
+                        'num_classes': num_classes,
+                        'is_builtin': False
                     })
         return available
 
     def load_model_from_dir(self, model_dir: str) -> bool:
-        """从指定目录加载模型"""
+        """从指定目录加载模型（线程安全）"""
+        import json
+
+        with self.model_lock:
+            return self._load_model_from_dir_impl(model_dir)
+
+    def _load_model_from_dir_impl(self, model_dir: str) -> bool:
+        """从指定目录加载模型（内部实现）"""
         import json
 
         inference_path = os.path.join(model_dir, "inference_model.pth")
@@ -261,7 +290,12 @@ class AccessControl:
                 with open(info_path, 'r', encoding='utf-8') as f:
                     self.trained_model_info = json.load(f)
 
+            # 加载训练时的最佳阈值（如果没有配置，默认使用 0.55）
+            self.trained_threshold = self.trained_model_info.get('best_threshold', 0.55)
+            self.trained_val_acc = self.trained_model_info.get('best_val_acc', None)
+
             self.trained_model_dir = model_dir
+            self.use_trained_model = True
             self._sync_users_with_model()
 
             classes = len(self.trained_model_info.get('idx_to_class', {}))
@@ -278,13 +312,22 @@ class AccessControl:
     def _recognize_with_trained_model(self, face_img: np.ndarray) -> Tuple[str, float]:
         """
         使用训练好的模型识别人脸（只匹配数据库中已注册的激活用户）
+        增加二次验证：当 top1 和 top2 相似度差距太小时，拒绝识别（防止相似用户误识别）
         :param face_img: 人脸图片 (BGR)
-        :return: (姓名, 置信度)
+        :return: (姓名, 置信度 0~100%)
         """
-        if self.trained_model is None or self.transform is None:
+        # 加锁快照，防止模型切换时读到半更新状态
+        with self.model_lock:
+            model = self.trained_model
+            transform = self.transform
+            embeddings = dict(self.registered_embeddings)
+            threshold = getattr(self, 'trained_threshold', 0.55)
+            device = self.device
+
+        if model is None or transform is None:
             return "Unknown", 0.0
 
-        if not self.registered_embeddings:
+        if not embeddings:
             return "Unknown", 0.0
 
         try:
@@ -293,34 +336,50 @@ class AccessControl:
             # 预处理
             rgb_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
             pil_img = torch_utils.Image.fromarray(rgb_img)
-            tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
+            tensor = transform(pil_img).unsqueeze(0).to(device)
 
             # 提取 embedding
             with torch.no_grad():
-                embedding = self.trained_model(tensor)  # [1, 128]
+                embedding = model(tensor)  # [1, 128]
                 embedding = F.normalize(embedding, p=2, dim=1)
 
             # 跟所有注册用户的 embedding 比较余弦相似度
-            best_name = "Unknown"
-            best_sim = -1.0
-
-            for name, reg_emb in self.registered_embeddings.items():
+            sims = []
+            for name, reg_emb in embeddings.items():
                 sim = F.cosine_similarity(embedding, reg_emb.unsqueeze(0)).item()
-                if sim > best_sim:
-                    best_sim = sim
-                    best_name = name
+                sims.append((name, sim))
 
-            # 置信度阈值：低于 0.40 视为未注册
-            if best_sim >= 0.40:
-                # 严格模式：验证用户是否在数据库中且已激活
-                if STRICT_REGISTRATION_ONLY:
-                    db_user = self.user_manager.db.get_user_by_name(best_name)
-                    if not db_user or not db_user.get('is_active', True):
-                        print(f"Rejected: '{best_name}' not in active DB users (sim={best_sim:.3f})")
-                        return "Unknown", best_sim
-                return best_name, best_sim
-            else:
-                return "Unknown", best_sim
+            # 按相似度降序排序
+            sims.sort(key=lambda x: x[1], reverse=True)
+
+            best_name = sims[0][0] if sims else "Unknown"
+            best_sim = sims[0][1] if sims else -1.0
+
+            # 相似度低于阈值 → 未识别
+            if best_sim < threshold:
+                return "Unknown", 0.0
+
+            # 二次验证：top1 和 top2 差距检查
+            # 如果两个最相似的用户差距太小，说明模型无法区分，拒绝识别
+            MARGIN_THRESHOLD = 0.10  # 最小差距要求
+            if len(sims) >= 2:
+                second_sim = sims[1][1]
+                margin = best_sim - second_sim
+                if margin < MARGIN_THRESHOLD:
+                    print(f"Ambiguous: '{best_name}'({best_sim:.3f}) vs '{sims[1][0]}'({second_sim:.3f}), "
+                          f"margin={margin:.3f} < {MARGIN_THRESHOLD}, rejected")
+                    return "Unknown", 0.0
+
+            # 严格模式：验证用户是否在数据库中且已激活
+            if STRICT_REGISTRATION_ONLY:
+                db_user = self.user_manager.db.get_user_by_name(best_name)
+                if not db_user or not db_user.get('is_active', True):
+                    print(f"Rejected: '{best_name}' not in active DB users (sim={best_sim:.3f})")
+                    return "Unknown", 0.0
+
+            # 置信度 = 相似度直接作为置信度（已超过阈值）
+            confidence = best_sim
+            return best_name, confidence
 
         except Exception as e:
             print(f"Recognition error: {e}")
@@ -425,6 +484,24 @@ class AccessControl:
                 time.sleep(0.05)
                 continue
 
+            # 门禁开关状态管理
+            self._update_door_state(current_time)
+
+            # 门已打开或在冷却期，跳过识别（节省算力）
+            if self.door_open or current_time < self.door_cooldown_until:
+                with self.frame_lock:
+                    if self.latest_frame is None:
+                        time.sleep(0.05)
+                        continue
+                    # 只更新画面，不做人脸识别
+                    self.result_frame = self.latest_frame.copy()
+                    self.result_status = "Pass" if self.door_open else "Standby"
+                    self.result_user = self.current_user
+                    self.result_confidence = 0.0
+                self.last_process_time = current_time
+                time.sleep(0.1)
+                continue
+
             with self.frame_lock:
                 if self.latest_frame is None:
                     time.sleep(0.05)
@@ -436,10 +513,6 @@ class AccessControl:
                 face_locations, face_encodings = self._detect_faces_yolo(frame)
             else:
                 face_locations, face_encodings = self._detect_faces_default(frame)
-
-            # Debug: 打印检测结果
-            if len(face_locations) > 0:
-                print(f"Detected {len(face_locations)} faces")
 
             status = "Standby"
             user_name = None
@@ -494,6 +567,8 @@ class AccessControl:
                         color = (0, 255, 0)  # 绿色
                         text = "Welcome"
                         detail_text = f"{confidence:.2%}"
+                        # 触发开门
+                        self._open_door(user_name)
                     else:
                         status = "Reject"
                         color = (0, 0, 255)  # 红色
@@ -550,31 +625,101 @@ class AccessControl:
             self.result_confidence = confidence
             self.last_process_time = current_time
 
+    def _open_door(self, user_name: str):
+        """开门"""
+        now = time.time()
+        if self.door_open or now < self.door_cooldown_until:
+            return  # 已开门或在冷却期，不重复触发
+
+        self.door_open = True
+        self.door_open_time = now
+        self.current_user = user_name
+        print(f"Door OPEN - {user_name} (auto-close in {DOOR_OPEN_DURATION}s)")
+
+        # 触发开门回调（可连接 GPIO/继电器等）
+        if self.on_door_open:
+            try:
+                self.on_door_open(user_name)
+            except Exception as e:
+                print(f"Door open callback error: {e}")
+
+    def _update_door_state(self, current_time: float):
+        """检查是否需要自动关门"""
+        if not self.door_open:
+            return
+
+        elapsed = current_time - self.door_open_time
+        if elapsed >= DOOR_OPEN_DURATION:
+            self.door_open = False
+            self.door_cooldown_until = current_time + DOOR_COOLDOWN
+            print(f"Door CLOSE (was open for {elapsed:.1f}s, cooldown {DOOR_COOLDOWN}s)")
+
+            # 触发关门回调
+            if self.on_door_close:
+                try:
+                    self.on_door_close()
+                except Exception as e:
+                    print(f"Door close callback error: {e}")
+
+    def force_open_door(self, duration: float = None):
+        """手动强制开门（管理员操作）"""
+        dur = duration or DOOR_OPEN_DURATION
+        now = time.time()
+        self.door_open = True
+        self.door_open_time = now
+        print(f"Door FORCE OPEN for {dur}s")
+        if self.on_door_open:
+            try:
+                self.on_door_open("Admin")
+            except Exception as e:
+                print(f"Door open callback error: {e}")
+
     def _detect_faces_yolo(self, frame: np.ndarray) -> Tuple[List, List]:
         """
-        使用 YOLO 检测人脸并提取编码
+        使用 YOLO 检测人脸，再用 face_recognition 提取编码
         :param frame: 视频帧 (BGR)
         :return: (人脸位置列表, 人脸编码列表)
         """
         # 缩小帧以提高处理速度
         small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
 
-        # 使用 YOLO 检测人脸 (传入 BGR 格式)
+        # 使用 YOLO 检测人脸
         detections = self.yolo_detector.detect(small_frame)
 
         face_locations = []
+        face_encodings = []
 
+        if len(detections) == 0:
+            return face_locations, face_encodings
+
+        # 转换为 RGB 用于 face_recognition
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w = rgb_frame.shape[:2]
+
+        # 将 YOLO 检测结果转换为 face_recognition 格式 (top, right, bottom, left)
+        fr_locations = []
         for x1, y1, x2, y2, conf in detections:
-            # 缩放回原始尺寸 (YOLO 检测的是缩小后的帧)
-            x1 *= 2
-            y1 *= 2
-            x2 *= 2
-            y2 *= 2
+            # 添加边距
+            margin_x = int((x2 - x1) * 0.2)
+            margin_y = int((y2 - y1) * 0.2)
 
-            face_locations.append((x1, y1, x2, y2))
+            # 转换为 face_recognition 格式并缩放回原始尺寸
+            top = max(0, int((y1 * 2) - margin_y))
+            right = min(w, int((x2 * 2) + margin_x))
+            bottom = min(h, int((y2 * 2) + margin_y))
+            left = max(0, int((x1 * 2) - margin_x))
 
-        # 返回空的 face_encodings（使用训练模型时不需要）
-        return face_locations, []
+            fr_locations.append((top, right, bottom, left))
+            face_locations.append((x1 * 2, y1 * 2, x2 * 2, y2 * 2))  # 保存原始 YOLO 格式
+
+        # 使用 face_recognition 在完整帧上提取编码（传入人脸位置）
+        try:
+            face_encodings = face_recognition.face_encodings(rgb_frame, fr_locations)
+        except Exception as e:
+            print(f"Warning: face_encodings failed: {e}")
+            face_encodings = [None] * len(fr_locations)
+
+        return face_locations, face_encodings
 
     def _detect_faces_default(self, frame: np.ndarray) -> Tuple[List, List]:
         """
