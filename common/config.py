@@ -19,7 +19,7 @@ FACES_DIR = os.path.join(DATA_DIR, "faces")
 WORK_PHOTOS_DIR = os.path.join(DATA_DIR, "work_photos")
 
 # 人脸识别配置
-FACE_RECOGNITION_TOLERANCE = 0.6  # 识别容差阈值，越小越严格（face_recognition 建议 0.6）
+FACE_RECOGNITION_TOLERANCE = 0.45  # face_recognition 识别容差，越小越严格（门禁场景建议0.4~0.5）
 FACE_DETECTION_MODEL = "hog"  # 人脸检测模型: "hog" (CPU快速) 或 "cnn" (GPU高精度)
 FACE_INPUT_SIZE = 112  # 人脸输入尺寸 (112x112)，MobileFaceNet标准尺寸
 

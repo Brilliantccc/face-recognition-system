@@ -353,7 +353,8 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        encoding_bytes = encoding.tobytes()
+        # 统一转为 float32 存储，避免读取时维度错位
+        encoding_bytes = encoding.astype(np.float32).tobytes()
         cursor.execute(
             "INSERT INTO face_encodings (user_id, encoding, image_path) VALUES (?, ?, ?)",
             (user_id, encoding_bytes, image_path)

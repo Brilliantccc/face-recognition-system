@@ -107,9 +107,26 @@ class FaceRecognizer:
             self.use_yolo = False
 
     def load_model(self):
-        """加载模型"""
+        """加载模型（自动查找最新版本）"""
         model_path = os.path.join(self.model_dir, "inference_model.pth")
         info_path = os.path.join(self.model_dir, "model_info.json")
+
+        # 如果直接路径没有模型，自动扫描子目录找最新版本
+        if not os.path.exists(model_path) and os.path.isdir(self.model_dir):
+            version_dirs = sorted(
+                [d for d in os.listdir(self.model_dir)
+                 if os.path.isdir(os.path.join(self.model_dir, d))],
+                key=lambda d: os.path.getmtime(os.path.join(self.model_dir, d)),
+                reverse=True
+            )
+            for vdir in version_dirs:
+                candidate = os.path.join(self.model_dir, vdir, "inference_model.pth")
+                if os.path.exists(candidate):
+                    self.model_dir = os.path.join(self.model_dir, vdir)
+                    model_path = candidate
+                    info_path = os.path.join(self.model_dir, "model_info.json")
+                    print(f"Auto-found model in: {vdir}")
+                    break
 
         if not os.path.exists(model_path):
             print(f"Warning: Model not found at {model_path}")
@@ -171,7 +188,7 @@ class FaceRecognizer:
         :return: 人脸位置列表 [(x, y, w, h), ...]
         """
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+        faces = self.face_cascade.detectMultiScale(gray, 1.1, 3)
         return faces
 
     def preprocess_face(self, image, face_rect):

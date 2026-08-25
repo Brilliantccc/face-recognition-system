@@ -74,6 +74,9 @@ class AccessControl:
         if self.use_yolo:
             self._init_yolo_detector(yolo_model_size, yolo_confidence)
 
+        # Haar Cascade 备用人脸检测器
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
         # 训练模型配置 (需要 torch)
         self.use_trained_model = use_trained_model and TORCH_AVAILABLE
         self.trained_model = None
@@ -264,6 +267,16 @@ class AccessControl:
             return False
 
         try:
+            # 确保设备和变换已初始化（启动时 use_trained_model=False 时未初始化）
+            if self.device is None:
+                self.device = torch_utils.get_device(prefer_gpu=True)
+            if self.transform is None:
+                self.transform = torch_utils.transforms.Compose([
+                    torch_utils.transforms.Resize((FACE_INPUT_SIZE, FACE_INPUT_SIZE)),
+                    torch_utils.transforms.ToTensor(),
+                    torch_utils.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+
             checkpoint = torch_utils.load_model_checkpoint(model_file, map_location=self.device)
 
             # 始终用无分类头的模型，通过 embedding 余弦相似度识别
@@ -290,8 +303,8 @@ class AccessControl:
                 with open(info_path, 'r', encoding='utf-8') as f:
                     self.trained_model_info = json.load(f)
 
-            # 加载训练时的最佳阈值（如果没有配置，默认使用 0.55）
-            self.trained_threshold = self.trained_model_info.get('best_threshold', 0.55)
+            # 加载训练时的最佳阈值（如果没有配置，默认使用 0.65）
+            self.trained_threshold = self.trained_model_info.get('best_threshold', 0.65)
             self.trained_val_acc = self.trained_model_info.get('best_val_acc', None)
 
             self.trained_model_dir = model_dir
@@ -321,7 +334,7 @@ class AccessControl:
             model = self.trained_model
             transform = self.transform
             embeddings = dict(self.registered_embeddings)
-            threshold = getattr(self, 'trained_threshold', 0.55)
+            threshold = getattr(self, 'trained_threshold', 0.65)
             device = self.device
 
         if model is None or transform is None:
@@ -338,10 +351,9 @@ class AccessControl:
             pil_img = torch_utils.Image.fromarray(rgb_img)
             tensor = transform(pil_img).unsqueeze(0).to(device)
 
-            # 提取 embedding
+            # 提取 embedding（模型 forward 已包含 L2 归一化，无需重复）
             with torch.no_grad():
-                embedding = model(tensor)  # [1, 128]
-                embedding = F.normalize(embedding, p=2, dim=1)
+                embedding = model(tensor)  # [1, 128]，已 L2-norm
 
             # 跟所有注册用户的 embedding 比较余弦相似度
             sims = []
@@ -386,8 +398,43 @@ class AccessControl:
 
         return "Unknown", 0.0
 
+    def _detect_faces_for_register(self, image: np.ndarray):
+        """
+        检测人脸（仅返回位置，不计算编码），用于注册时构建 embedding 缓存。
+        预处理必须与实时识别完全一致：同样的缩放、同样的检测器。
+        """
+        if self.use_yolo and self.yolo_detector is not None:
+            # 与 _detect_faces_yolo 一致：先缩小到 0.5x 再检测，再缩放回原尺寸
+            small_frame = cv2.resize(image, (0, 0), fx=0.5, fy=0.5)
+            detections = self.yolo_detector.detect(small_frame)
+            h, w = image.shape[:2]
+            return [(int(x1*2), int(y1*2), int((x2-x1)*2), int((y2-y1)*2))
+                    for x1, y1, x2, y2, _ in detections]
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+        return faces
+
+    def _crop_face_with_margin(self, image: np.ndarray, face_rect, margin_ratio=0.2):
+        """
+        裁剪人脸区域并扩展 margin，与 trainer/inference.py 的预处理保持一致。
+        :param image: BGR 图片
+        :param face_rect: (x, y, w, h)
+        :param margin_ratio: 边距比例（默认 20%）
+        :return: 裁剪后的人脸图片 (BGR)
+        """
+        x, y, w, h = face_rect
+        margin = int(0.2 * max(w, h))
+        x1 = max(0, x - margin)
+        y1 = max(0, y - margin)
+        x2 = min(image.shape[1], x + w + margin)
+        y2 = min(image.shape[0], y + h + margin)
+        return image[y1:y2, x1:x2]
+
     def build_registered_embeddings(self):
-        """为所有注册用户的照片提取 embedding 缓存"""
+        """
+        为所有注册用户的照片提取 embedding 缓存。
+        重要：预处理必须与注册时完全一致 —— 先检测裁剪人脸，再 resize/归一化/送模型。
+        """
         if self.trained_model is None or self.transform is None:
             return
 
@@ -421,7 +468,20 @@ class AccessControl:
                     img = imread_safe(img_path)
                     if img is None:
                         continue
-                    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                    # 先检测人脸并裁剪（与注册时的预处理一致）
+                    faces = self._detect_faces_for_register(img)
+                    if len(faces) == 0:
+                        continue
+                    face_rect = max(faces, key=lambda f: f[2] * f[3])
+                    face_img = self._crop_face_with_margin(img, face_rect)
+
+                    # 裁剪后太小则跳过
+                    if face_img.shape[0] <50 or face_img.shape[1] <50:
+                        continue
+
+                    # 与识别时完全一致的预处理：BGR→RGB→PIL→Tensor→Normalize
+                    rgb_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
                     pil_img = torch_utils.Image.fromarray(rgb_img)
                     tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
                     with torch.no_grad():
@@ -536,7 +596,10 @@ class AccessControl:
 
                     if self.use_trained_model and self.trained_model is not None:
                         # 使用训练模型识别
-                        face_img = frame[top:bottom, left:right] if bottom > top and right > left else None
+                        # 裁剪人脸并扩展margin，与注册时的预处理保持一致
+                        face_img = self._crop_face_with_margin(
+                            frame, (left, top, right - left, bottom - top)
+                        ) if bottom > top and right > left else None
                         if face_img is not None and face_img.size > 0:
                             user_name, confidence = self._recognize_with_trained_model(face_img)
                             if user_name != "Unknown":

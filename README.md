@@ -74,7 +74,7 @@ python admin/main.py
 1. 在人事管理系统中点击 **"🧠 生成编码"**
 2. 选择编码模型：
    - **face_recognition**（推荐）：基于 dlib，128维，适合门禁验证
-   - **训练模型**：MobileFaceNet，256维，适合分类任务
+   - **训练模型**：MobileFaceNet，128维，适合分类任务
 3. 等待生成完成
 
 > ⚠️ 切换模型时会清除旧编码并重新生成。同一模型重复生成会跳过（除非强制）。
@@ -107,9 +107,9 @@ python gate/main.py
 | 模型 | 维度 | 说明 |
 |------|------|------|
 | **face_recognition** | 128维 | 基于 dlib，专为验证任务设计，推荐用于门禁 |
-| **训练模型** | 256维 | MobileFaceNet + ArcFace，为分类任务设计 |
+| **训练模型** | 128维 | MobileFaceNet + ArcFace，为分类任务设计 |
 
-> ⚠️ 两种模型的编码维度不同，切换模型时需要重新生成编码。
+> ⚠️ 两种模型的编码空间不同（向量含义不同），**不能混用**。注册用哪个模型，识别就必须用同一个模型。
 
 ### 预训练模型下载
 
@@ -120,25 +120,25 @@ python gate/main.py
 | facenet-optimal-v2 | MobileFaceNet + ArcFace，10575类 | [ModelScope](https://www.modelscope.cn/models/Brilliantccc/facenet-optimal-v2) |
 
 下载后将模型文件放到 `trainer/models/saved/optimal_v2/` 目录下即可。
+你找到其他的模型也可以放这，不想放这，你其他地方要改路径
 
-！！！注意！！！作者训练出的模型更适合人脸分类，可能不太适合本项目，使用后的实际效果也不好，所以本项目下的训练方式也不适合，慎用！！
+## 自己训练模型
 
-## 自己训练模型（慎用）
-
-> 门禁系统支持两种识别方式，可在下拉框自由切换：
+> 门禁系统支持两种识别方式，可在下拉框切换，但需要对应你注册时用的是哪个模型生成的编码：
 > - **face_recognition**（内置，无需训练，开箱即用）
 > - **MobileFaceNet**（你训练的模型，精度更高）
 >
-> 有训练模型时默认用 MobileFaceNet，没有时自动使用 face_recognition。
+>
 
 ### 置信度说明
 
-| 识别方式 | 置信度含义 | 通过条件 |
-|---------|-----------|---------|
-| 训练模型 | 余弦相似度（0~1） | 相似度 ≥ 训练时的最佳阈值 |
-| face_recognition | 欧氏距离 | 距离 ≤ 0.6 |
+| 识别方式 | 比对方式 | 输出含义 | 通过条件 |
+|---------|---------|---------|---------|
+| 训练模型 | `cosine_similarity` | 相似度（1=完全相同，0=完全不同） | 相似度 ≥ 0.65 |
+| face_recognition | `face_distance` | 距离（0=完全相同，1=完全不同） | 距离 ≤ 0.45 |
 
-训练模型的阈值会在训练时自动计算并保存到 `model_info.json`，显示在门禁状态栏中。
+> 两个阈值含义相反：训练模型的阈值**越大越严格**，face_recognition 的阈值**越小越严格**。
+> 训练模型的阈值可从 `model_info.json` 读取，显示在门禁状态栏中。
 
 ### 前置条件
 
@@ -273,7 +273,7 @@ python trainer/test_model.py --model-dir trainer/models/saved/最优模型目录
 
 ```python
 # 人脸识别配置
-FACE_RECOGNITION_TOLERANCE = 0.6    # 识别容差阈值（face_recognition 推荐 0.6）
+FACE_RECOGNITION_TOLERANCE = 0.45   # face_recognition 识别容差（距离阈值，越小越严格，门禁推荐 0.4~0.5）
 FACE_DETECTION_MODEL = "hog"        # 人脸检测模型: "hog" (CPU快速) 或 "cnn" (GPU高精度)
 
 # YOLO 人脸检测配置

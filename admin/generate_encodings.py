@@ -2,7 +2,9 @@
 为已有用户生成人脸编码
 支持两种模型：
 1. face_recognition (基于 dlib，128维，推荐用于验证任务)
-2. trained_model (训练的 MobileFaceNet，256维，用于分类任务)
+2. trained_model (训练的 MobileFaceNet，128维，用于分类任务)
+
+重要：--model trained 时会自动查找最新训练的模型（与门禁系统加载逻辑一致）。
 
 用法:
   python admin/generate_encodings.py --model face_recognition
@@ -136,6 +138,28 @@ def generate_with_face_recognition(progress_queue=None):
     return total_new
 
 
+def _find_latest_model_dir():
+    """
+    自动查找最新训练的模型目录（与 gate/access_control.py 的加载逻辑一致）。
+    优先查找带 inference_model.pth 的版本目录，按修改时间倒序。
+    """
+    models_root = os.path.join(os.path.dirname(__file__), "..", "trainer", "models", "saved")
+    if not os.path.exists(models_root):
+        return None
+
+    version_dirs = sorted(
+        [d for d in os.listdir(models_root) if os.path.isdir(os.path.join(models_root, d))],
+        key=lambda d: os.path.getmtime(os.path.join(models_root, d)),
+        reverse=True
+    )
+    for vdir in version_dirs:
+        candidate = os.path.join(models_root, vdir, "inference_model.pth")
+        if os.path.exists(candidate):
+            return os.path.join(models_root, vdir)
+
+    return None
+
+
 def generate_with_trained_model(progress_queue=None):
     """使用训练模型生成编码"""
     def report(msg_type, *args):
@@ -159,7 +183,13 @@ def generate_with_trained_model(progress_queue=None):
         spec.loader.exec_module(inference_mod)
         FaceRecognizer = inference_mod.FaceRecognizer
 
-        model_dir = os.path.join(os.path.dirname(__file__), "..", "trainer", "models", "saved", "optimal_v2")
+        # 自动查找最新模型（与门禁系统 _load_trained_model 逻辑一致）
+        model_dir = _find_latest_model_dir()
+        if model_dir is None:
+            report('error', "No trained model found in trainer/models/saved/")
+            return 0
+
+        report('progress', 0, 1, f"Using model: {os.path.basename(model_dir)}")
         recognizer = FaceRecognizer(model_dir=model_dir)
         if not recognizer.load_model():
             report('error', "Model load failed")
