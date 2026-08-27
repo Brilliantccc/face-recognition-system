@@ -1,0 +1,11 @@
+{
+    "detector_model": "models/yolov8n.onnx",
+    "recognizer_model": "models/mobilefacenet.onnx",
+    "database_path": "models/embeddings.bin",
+    "recognition_threshold": 0.6,
+    "use_gpu": true,
+    "camera_id": 0,
+    "input_width": 640,
+    "input_height": 480,
+    "log_level": "INFO"
+}

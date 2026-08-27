@@ -60,3 +60,15 @@ README_LAUNCHER.md
 *.swp
 *.swo
 *~
+*.zip
+*.exe
+
+# 部署目录（模型文件和编译产物）
+deploy/build/
+deploy/bin/
+deploy/__pycache__/
+deploy/models/
+deps/
+
+# 门禁启动脚本（本地配置不同）
+启动门禁系统-ONNX.bat

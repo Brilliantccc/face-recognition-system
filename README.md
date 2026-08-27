@@ -1,11 +1,12 @@
-# 人脸识别门禁系统 v3.2
+# 人脸识别门禁系统 v3.3
 
-基于 face_recognition (dlib) 和 MobileFaceNet + ArcFace Loss 的人脸识别门禁系统，支持双模型切换、YOLO 检测。
+基于 face_recognition (dlib) 和 MobileFaceNet + ArcFace Loss 的人脸识别门禁系统，支持双模型切换、YOLO 检测、C++ 高性能部署。
 
 ## 系统架构
 
 ```
 人脸识别/
+├── deploy/                        # C++ 部署模块（高性能推理）
 ├── common/                        # 公共模块
 │   ├── database.py               # 数据库操作
 │   ├── user_manager.py           # 用户管理
@@ -289,6 +290,44 @@ STRICT_REGISTRATION_ONLY = True     # 只允许数据库注册用户通过
 MIN_FACE_PHOTOS = 5                 # 快速注册最少照片数
 ```
 
+## C++ 高性能部署
+
+除了 Python 版本，还提供 C++ 部署版本，性能更高（延迟 < 20ms，FPS 50-60）。
+
+### 编译运行
+详见 [deploy/README.md](deploy/README.md)
+```bash
+# 1. 安装依赖（需要 vcpkg）
+cd D:\
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg && .\bootstrap-vcpkg.bat
+.\vcpkg install opencv4:x64-windows onnxruntime-gpu:x64-windows
+
+# 2. 编译
+cd deploy
+.\build.bat
+
+# 3. 运行
+.\启动门禁系统.bat
+```
+
+### 注册新人员（C++ 版本）
+
+C++ 版本只负责识别，注册仍在 Python 系统中：
+
+1. 在 Python 系统中注册人员
+2. 导出编码：`python deploy/export_database.py`
+3. 重启 C++ 门禁系统
+
+### 门禁控制逻辑
+
+识别成功后：
+1. 发送开门信号（模拟，有实物后可对接串口/GPIO/网络）
+2. 进入 5 秒冷却期，期间不检测
+3. 冷却期结束后恢复检测
+
+详见 [deploy/README.md](deploy/README.md)
+
 ## 注意事项
 
 1. 摄像头需正确连接
@@ -307,6 +346,7 @@ MIN_FACE_PHOTOS = 5                 # 快速注册最少照片数
 
 ## 更新日志
 
+- **v3.3** — C++ 高性能部署（ONNX Runtime + CUDA）、门禁冷却期控制
 - **v3.2** — 双模型编码选择、YOLO+face_recognition 联合检测、沉浸式门禁界面、人事管理界面重构
 - **v3.1** — 快速注册、批量导入、严格安全模式、移除训练 GUI、修复中文路径
 - **v3.0** — 门禁多模型切换、embedding 余弦相似度识别
