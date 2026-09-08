@@ -800,9 +800,9 @@ class GateWindow(QMainWindow):
                 from common.yolo_detector import YOLOFaceDetector
                 import torch
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                from common.config import YOLO_MODEL_SIZE, YOLO_CONFIDENCE
+                from common.config import YOLO_MODEL_PATH, YOLO_CONFIDENCE
                 self.access_control.yolo_detector = YOLOFaceDetector(
-                    model_size=YOLO_MODEL_SIZE,
+                    model_path=YOLO_MODEL_PATH,
                     confidence=YOLO_CONFIDENCE,
                     device=device
                 )

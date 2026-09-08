@@ -18,6 +18,17 @@ public:
     static constexpr int INPUT_SIZE = 112;
 
     /**
+     * 扩大人脸区域
+     *
+     * @param bbox 原始边界框
+     * @param image_width 图像宽度
+     * @param image_height 图像高度
+     * @param expand_ratio 扩展比例（默认0.2，即20%）
+     * @return 扩展后的边界框
+     */
+    static cv::Rect expand_bbox(const cv::Rect& bbox, int image_width, int image_height, float expand_ratio = 0.2f);
+
+    /**
      * 预处理人脸图像
      *
      * @param image 原始图像
@@ -35,9 +46,6 @@ public:
     static cv::Mat preprocess_face(const cv::Mat& face_image);
 
 private:
-    // 扩大人脸区域
-    static cv::Rect expand_bbox(const cv::Rect& bbox, int image_width, int image_height, float expand_ratio = 0.2f);
-
     // 归一化
     static cv::Mat normalize(const cv::Mat& float_img);
 

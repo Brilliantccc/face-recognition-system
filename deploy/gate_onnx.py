@@ -20,7 +20,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 class FaceDetector:
-    """YOLO 人脸检测器 (ONNX Runtime)"""
+    """YOLOv11 人脸检测器 (ONNX Runtime)"""
 
     def __init__(self, model_path: str, conf_threshold: float = 0.5):
         self.conf_threshold = conf_threshold
@@ -33,7 +33,7 @@ class FaceDetector:
         self.input_name = self.session.get_inputs()[0].name
         self.input_shape = self.session.get_inputs()[0].shape  # [1, 3, 640, 640]
 
-        print(f"✅ 检测模型加载成功 (Provider: {self.session.get_providers()[0]})")
+        print(f"✅ 检测模型加载成功: {Path(model_path).name} (Provider: {self.session.get_providers()[0]})")
 
     def detect(self, frame: np.ndarray) -> List[Tuple[int, int, int, int, float]]:
         """
@@ -50,29 +50,21 @@ class FaceDetector:
         # 推理
         outputs = self.session.run(None, {self.input_name: img})
 
-        # 后处理
-        detections = []
-        output = outputs[0]  # [1, num_classes + 4 + 1, num_detections]
+        # 后处理 - YOLOv11 输出格式: [1, 5, 8400] (4 bbox + 1 class_score)
+        output = outputs[0]
 
-        # YOLOv8 输出格式: [x_center, y_center, w, h, class_scores...]
         if len(output.shape) == 3:
-            output = output[0]  # [num_classes + 4 + 1, num_detections]
+            output = output[0]  # [5, 8400]
 
-        # 转置为 [num_detections, num_classes + 4 + 1]
+        # 转置为 [8400, 5]
         output = output.T
 
+        detections = []
         for det in output:
-            # 解析检测结果
-            x_center, y_center, box_w, box_h = det[:4]
-            class_scores = det[4:-1]  # 去掉最后的 objectness score
-            obj_conf = det[-1]
+            # YOLOv11: [x_center, y_center, w, h, class_score]
+            x_center, y_center, box_w, box_h, conf = det[:5]
 
-            # 找到最高置信度的类别
-            class_id = np.argmax(class_scores)
-            class_conf = class_scores[class_id]
-
-            # 只保留人脸类别 (class_id == 0 for face)
-            if class_id == 0 and obj_conf * class_conf > self.conf_threshold:
+            if conf > self.conf_threshold:
                 # 转换为角点坐标并缩放回原图尺寸
                 x1 = int((x_center - box_w / 2) * w / 640)
                 y1 = int((y_center - box_h / 2) * h / 640)
@@ -83,7 +75,7 @@ class FaceDetector:
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w, x2), min(h, y2)
 
-                detections.append((x1, y1, x2, y2, float(obj_conf * class_conf)))
+                detections.append((x1, y1, x2, y2, float(conf)))
 
         # NMS
         return self._nms(detections, 0.4)
@@ -138,7 +130,7 @@ class FaceRecognizer:
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
 
-        print(f"✅ 识别模型加载成功 (Provider: {self.session.get_providers()[0]})")
+        print(f"✅ 识别模型加载成功: {Path(model_path).name} (Provider: {self.session.get_providers()[0]})")
 
     def preprocess(self, frame: np.ndarray, bbox: Tuple[int, int, int, int]) -> np.ndarray:
         """预处理（必须与训练一致）"""
@@ -310,10 +302,33 @@ class GateSystem:
         frame_count = 0
         start_time = time.time()
 
+        # 冷却控制
+        gate_opened = False
+        gate_open_time = 0
+        COOLDOWN_SECONDS = 5  # 冷却时间（秒）
+
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+
+            # 检查冷却期
+            current_time = time.time()
+            if gate_opened:
+                elapsed_cooldown = current_time - gate_open_time
+                if elapsed_cooldown < COOLDOWN_SECONDS:
+                    # 冷却期内，跳过检测
+                    remaining = COOLDOWN_SECONDS - elapsed_cooldown
+                    cv2.putText(frame, f"Cooldown: {remaining:.1f}s",
+                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    cv2.imshow("Face Recognition Gate System", frame)
+                    if cv2.waitKey(1) == 27:
+                        break
+                    frame_count += 1
+                    continue
+                else:
+                    gate_opened = False
+                    print("[GATE] Cooldown finished, resuming detection")
 
             # 处理帧
             t0 = time.time()
@@ -332,7 +347,12 @@ class GateSystem:
                 if r['is_known']:
                     label = f"{r['name']} ({int(r['similarity']*100)}%)"
                     # 门禁控制：识别成功
-                    print(f"🔓 ACCESS GRANTED: {r['name']} (sim: {r['similarity']:.2f})")
+                    print(f"[GATE] Access granted: {r['name']} (sim: {r['similarity']:.2f})")
+                    print(f"[GATE] Entering cooldown for {COOLDOWN_SECONDS} seconds")
+
+                    # 进入冷却期
+                    gate_opened = True
+                    gate_open_time = time.time()
                 else:
                     label = "Stranger"
 

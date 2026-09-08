@@ -1,5 +1,5 @@
 /**
- * detector.cpp - YOLO 人脸检测器实现
+ * detector.cpp - YOLOv11 人脸检测器实现
  */
 #include "detector.h"
 #include <algorithm>
@@ -36,13 +36,10 @@ Detector::Detector(const std::string& model_path, bool use_gpu)
     std::wstring wmodel_path(model_path.begin(), model_path.end());
     session_ = std::make_unique<Ort::Session>(env_, wmodel_path.c_str(), session_options);
 
-    // 获取输入输出名称
-    auto allocator = Ort::AllocatorWithDefaultOptions();
-
-    // YOLOv8 输入: [batch, 3, 640, 640]
+    // YOLOv11 输入: [batch, 3, 640, 640]
     input_size_ = cv::Size(640, 640);
 
-    std::cout << "Detector model loaded successfully" << std::endl;
+    std::cout << "Detector model loaded: " << model_path << std::endl;
 }
 
 cv::Mat Detector::preprocess(const cv::Mat& frame) {
@@ -96,9 +93,8 @@ std::vector<Detection> Detector::detect(const cv::Mat& frame) {
     float* output_data = output[0].GetTensorMutableData<float>();
     auto output_shape = output[0].GetTensorTypeAndShapeInfo().GetShape();
 
-    // YOLOv8 输出: [1, 84, 8400] -> 转置为 [8400, 84]
+    // YOLOv11 输出: [1, 5, 8400] (4 bbox + 1 class_score)
     int num_detections = output_shape[2];  // 8400
-    int num_features = output_shape[1];    // 84 (4 bbox + 80 classes)
 
     return postprocess(output_data, num_detections, frame.cols, frame.rows);
 }
@@ -120,23 +116,15 @@ std::vector<Detection> Detector::postprocess(
     float y_scale = static_cast<float>(frame_height) / input_size_.height;
 
     for (int i = 0; i < output_size; ++i) {
-        // YOLOv8 输出格式: [1, 84, 8400]
-        // 行优先存储: output_data[c * output_size + i] 是第 i 个检测框的第 c 个特征
+        // YOLOv11 输出格式: [1, 5, 8400]
+        // 行优先存储: output_data[feature * output_size + i] 是第 i 个检测框的第 feature 个值
         float cx = output_data[0 * output_size + i];      // x center
         float cy = output_data[1 * output_size + i];      // y center
         float w = output_data[2 * output_size + i];       // width
         float h = output_data[3 * output_size + i];       // height
+        float score = output_data[4 * output_size + i];   // class score (人脸置信度)
 
-        // 获取类别分数（对于人脸检测，通常只有一类）
-        float max_score = 0;
-        for (int c = 4; c < 84; ++c) {
-            float score = output_data[c * output_size + i];
-            if (score > max_score) {
-                max_score = score;
-            }
-        }
-
-        if (max_score < conf_threshold) {
+        if (score < conf_threshold) {
             continue;
         }
 
@@ -153,7 +141,7 @@ std::vector<Detection> Detector::postprocess(
         height = std::min(height, frame_height - y1);
 
         boxes.push_back(cv::Rect(x1, y1, width, height));
-        scores.push_back(max_score);
+        scores.push_back(score);
     }
 
     // NMS

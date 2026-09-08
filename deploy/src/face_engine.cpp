@@ -5,6 +5,7 @@
 #include "detector.h"
 #include "recognizer.h"
 #include "database.h"
+#include "preprocess.h"
 #include <iostream>
 #include <chrono>
 
@@ -77,8 +78,12 @@ public:
             RecognitionResult result;
             result.detection = det;
 
+            // 扩大人脸区域 20%（与 Python 版本一致）
+            cv::Rect expanded_bbox = Preprocessor::expand_bbox(
+                det.bbox, frame.cols, frame.rows, 0.2f);
+
             // 提取人脸区域
-            cv::Mat face = frame(det.bbox).clone();
+            cv::Mat face = frame(expanded_bbox).clone();
 
             // 提取嵌入向量
             timer.start();

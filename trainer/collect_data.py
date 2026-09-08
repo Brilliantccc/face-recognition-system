@@ -14,18 +14,49 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class FaceDataCollector:
-    def __init__(self, output_dir="trainer/data"):
+    def __init__(self, output_dir="trainer/data", detection_backend="auto"):
         """
         初始化数据收集器
         :param output_dir: 输出目录
+        :param detection_backend: 检测器后端 ("yolo", "face_recognition", "haar", "auto")
         """
         self.output_dir = output_dir
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default_aligned.xml')
-        if self.face_cascade.empty():
-            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+        # 初始化检测器
+        from common.detectors import DetectorFactory
+        try:
+            self.detector = DetectorFactory.create(detection_backend)
+            print(f"Detector initialized: {type(self.detector).__name__}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize detector: {e}")
+            self.detector = None
 
         # 创建目录
         os.makedirs(output_dir, exist_ok=True)
+
+    def _detect_faces(self, image):
+        """
+        检测人脸
+        :param image: BGR 图片
+        :return: 人脸位置列表 [(x, y, w, h), ...]
+        """
+        if self.detector is None:
+            return []
+
+        try:
+            detections = self.detector.detect(image)
+            # 转换为 (x, y, w, h) 格式
+            faces = []
+            for det in detections:
+                if hasattr(det, 'x1'):
+                    x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+                else:
+                    x1, y1, x2, y2 = det[:4]
+                faces.append((x1, y1, x2-x1, y2-y1))
+            return faces
+        except Exception as e:
+            print(f"Warning: face detection failed: {e}")
+            return []
 
     def collect_from_camera(self, person_name: str, num_samples: int = 50):
         """
@@ -55,8 +86,7 @@ class FaceDataCollector:
                 break
 
             # 检测人脸
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+            faces = self._detect_faces(frame)
 
             # 绘制人脸框
             display_frame = frame.copy()
@@ -123,8 +153,7 @@ class FaceDataCollector:
                     continue
 
                 # 检测人脸
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+                faces = self._detect_faces(frame)
 
                 if len(faces) > 0:
                     # 取最大的人脸

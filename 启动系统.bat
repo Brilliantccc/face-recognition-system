@@ -9,8 +9,8 @@ echo ========================================
 echo    Face Recognition System
 echo ========================================
 echo.
-echo   [1] Admin  - User Management
-echo   [2] Gate   - Access Control
+echo   [1] Admin - User Management
+echo   [2] Gate  - Access Control
 echo   [0] Exit
 echo.
 echo   Train: python trainer/train_optimal.py

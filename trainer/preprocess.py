@@ -55,13 +55,13 @@ if project_root not in sys.path:
 
 
 class FacePreprocessor:
-    """人脸数据预处理器"""
+    """人脸数据预处理器（使用模块化架构）"""
 
     def __init__(self, output_size=112, method="yolo"):
         """
         初始化预处理器
         :param output_size: 输出图片尺寸 (112×112)
-        :param method: 人脸检测方法 ("yolo" 或 "face_recognition")
+        :param method: 人脸检测方法 ("yolo", "face_recognition", "haar", "auto")
         """
         self.output_size = output_size
         self.method = method
@@ -71,35 +71,17 @@ class FacePreprocessor:
 
     def _init_detector(self):
         """初始化人脸检测器"""
-        if self.method == "yolo":
-            try:
-                from common.yolo_detector import YOLOFaceDetector
-                # 自动检测 GPU 可用性
-                try:
-                    import torch
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                except ImportError:
-                    device = "cpu"
-                self.detector = YOLOFaceDetector(model_size="n", confidence=0.3, device=device)
-                print(f"[Preprocess] YOLO 人脸检测器已加载 (device: {device})")
-            except Exception as e:
-                print(f"[Preprocess] YOLO 加载失败: {e}")
-                print("[Preprocess] 回退到 face_recognition")
-                self.method = "face_recognition"
+        from common.detectors import DetectorFactory
 
-        if self.method == "face_recognition":
-            try:
-                import face_recognition
-                self.detector = "face_recognition"
-                print("[Preprocess] face_recognition 检测器已加载")
-            except ImportError:
-                print("[Preprocess] face_recognition 未安装，尝试使用 Haar Cascade")
-                self.method = "haar"
-
-        if self.method == "haar":
-            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-            self.detector = cv2.CascadeClassifier(cascade_path)
-            print("[Preprocess] Haar Cascade 检测器已加载")
+        try:
+            if self.method == "auto":
+                self.detector = DetectorFactory.create("auto")
+            else:
+                self.detector = DetectorFactory.create(self.method)
+            print(f"[Preprocess] 检测器已加载: {type(self.detector).__name__}")
+        except Exception as e:
+            print(f"[Preprocess] 检测器加载失败: {e}")
+            raise
 
     def detect_face(self, image):
         """
@@ -107,31 +89,20 @@ class FacePreprocessor:
         :param image: BGR 格式图片
         :return: (x1, y1, x2, y2) 或 None
         """
-        if self.method == "yolo" and self.detector is not None:
-            faces = self.detector.detect(image)
-            if faces:
+        if self.detector is None:
+            return None
+
+        try:
+            detections = self.detector.detect(image)
+            if detections:
                 # 取置信度最高的人脸
-                best = max(faces, key=lambda f: f[4])
-                return (best[0], best[1], best[2], best[3])
-
-        elif self.method == "face_recognition":
-            import face_recognition
-            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            # 缩小以加速
-            small = cv2.resize(rgb, (0, 0), fx=0.5, fy=0.5)
-            locations = face_recognition.face_locations(small, model="hog")
-            if locations:
-                top, right, bottom, left = locations[0]
-                # 缩放回原尺寸
-                return (left*2, top*2, right*2, bottom*2)
-
-        elif self.method == "haar" and self.detector is not None:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            faces = self.detector.detectMultiScale(gray, 1.3, 5)
-            if len(faces) > 0:
-                # 取最大的人脸
-                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                return (x, y, x + w, y + h)
+                best = max(detections, key=lambda d: d.confidence if hasattr(d, 'confidence') else 1.0)
+                if hasattr(best, 'x1'):
+                    return (best.x1, best.y1, best.x2, best.y2)
+                else:
+                    return (best[0], best[1], best[2], best[3])
+        except Exception as e:
+            print(f"[Preprocess] 检测失败: {e}")
 
         return None
 

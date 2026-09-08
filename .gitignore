@@ -29,46 +29,48 @@ env/
 Thumbs.db
 Desktop.ini
 
-# Project specific - 数据和模型（不可开源）
+# ==================== 不可开源（核心数据） ====================
+
+# 用户数据（人脸照片、上传照片）
 data/
+
+# 训练数据和模型
 trainer/data/
 trainer/models/saved/
+
+# 模型文件（权重）
 *.pth
 *.pt
 *.onnx
 *.npy
+*.bin
 
-# YOLO 预训练模型
-yolov8*.pt
+# 人脸数据库
+*.db
+*.sqlite
 
-# Logs
-*.log
+# ==================== 不可开源（部署产物） ====================
 
-# Documentation
-docs/
+# C++ 编译产物
+deploy/build/
+deploy/bin/
+deps/
 
-# Claude / 个人配置（不可开源）
+# 本地配置文件
 .claude/
 .codegraph/
 CLAUDE.md
 PYTORCH_FIX.md
 README_LAUNCHER.md
 
-# 临时文件和调试文件
+# 日志文件
+*.log
+
+# 临时文件
 *.tmp
 *.bak
-*.swp
-*.swo
-*~
 *.zip
 *.exe
-
-# 部署目录（模型文件和编译产物）
-deploy/build/
-deploy/bin/
-deploy/__pycache__/
-deploy/models/
-deps/
 
 # 门禁启动脚本（本地配置不同）
 启动门禁系统-ONNX.bat

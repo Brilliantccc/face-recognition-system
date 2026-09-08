@@ -1,14 +1,11 @@
 """
 为已有用户生成人脸编码
-支持两种模型：
-1. face_recognition (基于 dlib，128维，推荐用于验证任务)
-2. trained_model (训练的 MobileFaceNet，128维，用于分类任务)
-
-重要：--model trained 时会自动查找最新训练的模型（与门禁系统加载逻辑一致）。
+支持模块化架构：检测器 + 识别器 可自由组合
 
 用法:
+  python admin/generate_encodings.py --model mobilenet
   python admin/generate_encodings.py --model face_recognition
-  python admin/generate_encodings.py --model trained --force
+  python admin/generate_encodings.py --model auto --force
 """
 import os
 import sys
@@ -79,10 +76,12 @@ def generate_with_face_recognition(progress_queue=None):
     report('progress', 0, 1, "Loading face_recognition...")
 
     try:
-        import face_recognition
+        from common.recognizers import FaceRecognitionRecognizer
+        recognizer = FaceRecognitionRecognizer()
+        detector = recognizer  # face_recognition 同时具有检测和识别能力
         report('progress', 0, 1, "face_recognition loaded")
     except ImportError:
-        report('error', "face_recognition 未安装，请运行: pip install face_recognition")
+        report('error', "face_recognition 未安装，请运行: pip install face-recognition")
         return 0
 
     db = Database(DATABASE_PATH)
@@ -120,16 +119,24 @@ def generate_with_face_recognition(progress_queue=None):
 
         saved = 0
         for img_name, img_path, img in images:
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(rgb_img, model="hog")
+            # 使用模块化检测器
+            from common.detectors import DetectorFactory
+            det = DetectorFactory.create("face_recognition")
+            detections = det.detect(img)
 
-            if len(face_locations) == 0:
+            if len(detections) == 0:
                 continue
 
-            face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
-            if len(face_encodings) > 0:
-                db.add_face_encoding(user_id, face_encodings[0], img_path)
-                saved += 1
+            # 获取 embedding
+            best_det = max(detections, key=lambda d: d.confidence if hasattr(d, 'confidence') else 1.0)
+            x1, y1, x2, y2 = best_det.x1, best_det.y1, best_det.x2, best_det.y2
+            face_img = img[y1:y2, x1:x2]
+
+            if face_img.size > 0:
+                embedding = recognizer.get_embedding(face_img)
+                if embedding is not None:
+                    db.add_face_encoding(user_id, embedding, img_path)
+                    saved += 1
 
         report('progress', user_idx + 1, total_users, f"{name} - {saved}/{len(images)} encodings")
         total_new += saved
@@ -176,12 +183,7 @@ def generate_with_trained_model(progress_queue=None):
     report('progress', 0, 1, "Loading trained model...")
 
     try:
-        import importlib.util
-        inference_path = os.path.join(os.path.dirname(__file__), "..", "trainer", "inference.py")
-        spec = importlib.util.spec_from_file_location("trainer.inference", inference_path)
-        inference_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(inference_mod)
-        FaceRecognizer = inference_mod.FaceRecognizer
+        from common.recognizers import MobileFaceNetRecognizer
 
         # 自动查找最新模型（与门禁系统 _load_trained_model 逻辑一致）
         model_dir = _find_latest_model_dir()
@@ -190,10 +192,7 @@ def generate_with_trained_model(progress_queue=None):
             return 0
 
         report('progress', 0, 1, f"Using model: {os.path.basename(model_dir)}")
-        recognizer = FaceRecognizer(model_dir=model_dir)
-        if not recognizer.load_model():
-            report('error', "Model load failed")
-            return 0
+        recognizer = MobileFaceNetRecognizer(model_dir=model_dir)
     except Exception as e:
         report('error', f"Load inference module failed: {e}")
         return 0
@@ -235,17 +234,24 @@ def generate_with_trained_model(progress_queue=None):
 
         saved = 0
         for img_name, img_path, img in images:
-            faces = recognizer.detect_faces(img)
-            if len(faces) == 0:
+            # 使用模块化检测器
+            from common.detectors import DetectorFactory
+            det = DetectorFactory.create("yolo")
+            detections = det.detect(img)
+
+            if len(detections) == 0:
                 continue
 
-            face_rect = max(faces, key=lambda f: f[2] * f[3])
-            face_tensor = recognizer.preprocess_face(img, face_rect)
-            embedding = recognizer.get_embedding(face_tensor)
+            # 获取 embedding
+            best_det = max(detections, key=lambda d: d.confidence if hasattr(d, 'confidence') else 1.0)
+            x1, y1, x2, y2 = best_det.x1, best_det.y1, best_det.x2, best_det.y2
+            face_img = img[y1:y2, x1:x2]
 
-            if embedding is not None:
-                db.add_face_encoding(user_id, embedding, img_path)
-                saved += 1
+            if face_img.size > 0:
+                embedding = recognizer.get_embedding(face_img)
+                if embedding is not None:
+                    db.add_face_encoding(user_id, embedding, img_path)
+                    saved += 1
 
         report('progress', user_idx + 1, total_users, f"{name} - {saved}/{len(images)} encodings")
         total_new += saved
@@ -254,11 +260,11 @@ def generate_with_trained_model(progress_queue=None):
     return total_new
 
 
-def generate_encodings(progress_queue=None, model="face_recognition", force=False):
+def generate_encodings(progress_queue=None, model="mobilenet", force=False):
     """
     生成人脸编码
     :param progress_queue: 进度队列
-    :param model: 模型名称 ("face_recognition" 或 "trained")
+    :param model: 模型名称 ("mobilenet", "face_recognition", "auto")
     :param force: 强制重新生成
     """
     last_model = get_last_model()
@@ -289,7 +295,7 @@ def generate_encodings(progress_queue=None, model="face_recognition", force=Fals
     # 根据模型选择生成方式
     if model == "face_recognition":
         return generate_with_face_recognition(progress_queue)
-    elif model == "trained":
+    elif model in ("mobilenet", "trained", "auto"):
         return generate_with_trained_model(progress_queue)
     else:
         if progress_queue:
@@ -378,8 +384,9 @@ def generate_encodings_async(model="face_recognition", force=False):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="生成人脸编码")
-    parser.add_argument("--model", choices=["face_recognition", "trained"], default="face_recognition",
-                       help="编码模型: face_recognition (推荐) 或 trained")
+    parser.add_argument("--model", choices=["mobilenet", "face_recognition", "trained", "auto"],
+                       default="mobilenet",
+                       help="编码模型: mobilenet (推荐), face_recognition, 或 auto")
     parser.add_argument("--force", action="store_true", help="强制重新生成")
     args = parser.parse_args()
     generate_encodings(model=args.model, force=args.force)

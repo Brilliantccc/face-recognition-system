@@ -1,4 +1,4 @@
 @echo off
-cd /d D:\人脸识别\deploy
+cd /d "%~dp0"
 bin\Release\face_engine.exe
 pause

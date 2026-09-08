@@ -19,17 +19,31 @@ FACES_DIR = os.path.join(DATA_DIR, "faces")
 WORK_PHOTOS_DIR = os.path.join(DATA_DIR, "work_photos")
 
 # 人脸识别配置
-FACE_RECOGNITION_TOLERANCE = 0.45  # face_recognition 识别容差，越小越严格（门禁场景建议0.4~0.5）
-FACE_DETECTION_MODEL = "hog"  # 人脸检测模型: "hog" (CPU快速) 或 "cnn" (GPU高精度)
 FACE_INPUT_SIZE = 112  # 人脸输入尺寸 (112x112)，MobileFaceNet标准尺寸
+FACE_RECOGNITION_THRESHOLD = 0.55  # 人脸识别阈值（余弦相似度）
+FACE_RECOGNITION_TOLERANCE = 0.6  # face_recognition 容差阈值（兼容旧版）
 
-# YOLO 人脸检测配置
-USE_YOLO_DETECTION = False  # 是否使用 YOLO 进行人脸检测 (False 则使用 face_recognition)
-YOLO_MODEL_SIZE = "n"  # YOLO 模型大小: "n" (nano), "s" (small), "m" (medium), "l" (large), "x" (xlarge)
+# 模块化后端选择（随插随用架构）
+# 检测器: "yolo", "face_recognition", "haar", "auto"
+DETECTION_BACKEND = "auto"
+DETECTION_PRIORITY = ["yolo", "face_recognition", "haar"]
+
+# 识别器: "mobilenet", "face_recognition", "auto"
+RECOGNITION_BACKEND = "auto"
+RECOGNITION_PRIORITY = ["mobilenet", "face_recognition"]
+
+# 数据库: "bin", "db", "auto"
+DATABASE_BACKEND = "auto"
+DATABASE_PRIORITY = ["bin", "db"]
+
+# YOLO 人脸检测配置（兼容旧版）
+USE_YOLO_DETECTION = True  # 是否使用 YOLO 进行人脸检测（始终启用）
+YOLO_MODEL_PATH = os.path.join(BASE_DIR, "trainer", "models", "yolov11l-face.pt")  # YOLOv11 人脸检测模型路径
 YOLO_CONFIDENCE = 0.5  # YOLO 置信度阈值
 
-# 识别方式选择
-USE_TRAINED_MODEL = False  # 是否使用训练模型（False 则使用 face_recognition，推荐）
+# 识别模型配置（兼容旧版）
+USE_TRAINED_MODEL = True  # 是否使用 MobileFaceNet（始终启用）
+EMBEDDINGS_BIN_PATH = os.path.join(BASE_DIR, "deploy", "models", "embeddings.bin")  # 统一数据库路径
 
 # PyTorch / CUDA 配置
 PREFER_GPU = True  # 是否优先使用 GPU（如果可用）

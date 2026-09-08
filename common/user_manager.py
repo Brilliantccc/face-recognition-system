@@ -1,6 +1,7 @@
 """
 用户管理模块
 处理用户注册、删除和查询
+使用模块化架构：检测器 + 识别器 可自由组合
 """
 
 import os
@@ -8,25 +9,17 @@ import cv2
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 from .database import Database
-from .config import FACES_DIR, FACE_RECOGNITION_TOLERANCE
+from .config import FACES_DIR, FACE_RECOGNITION_TOLERANCE, DETECTION_BACKEND
 
 
-_face_recognition_module = None
-_face_recognition_loaded = False
-
-
-def _get_face_recognition():
-    """延迟加载 face_recognition（加载失败返回 None，不崩溃）"""
-    global _face_recognition_module, _face_recognition_loaded
-    if _face_recognition_loaded:
-        return _face_recognition_module
-    _face_recognition_loaded = True
+def _get_detector():
+    """获取人脸检测器"""
     try:
-        import face_recognition
-        _face_recognition_module = face_recognition
-    except Exception:
-        _face_recognition_module = None
-    return _face_recognition_module
+        from .detectors import DetectorFactory
+        return DetectorFactory.create(DETECTION_BACKEND)
+    except Exception as e:
+        print(f"Warning: Failed to create detector: {e}")
+        return None
 
 
 def imread_safe(filepath):
@@ -81,7 +74,7 @@ class UserManager:
         """
         # 检查用户是否已存在（包括不活跃的）
         existing_user = self.db.get_user_by_name(name)
-        
+
         if existing_user:
             user_id = existing_user['id']
             # 如果用户不活跃，重新激活
@@ -99,13 +92,13 @@ class UserManager:
         os.makedirs(user_dir, exist_ok=True)
 
         # 获取现有照片数量
-        existing_count = len([f for f in os.listdir(user_dir) 
+        existing_count = len([f for f in os.listdir(user_dir)
                             if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
 
         saved_count = 0
-        fr = _get_face_recognition()
-        if fr is None:
-            raise RuntimeError("face_recognition/dlib 未安装，无法注册人脸")
+        detector = _get_detector()
+        if detector is None:
+            raise RuntimeError("人脸检测器未安装，无法注册人脸")
 
         for i, image in enumerate(images):
             # 如果图片太大，先缩小
@@ -115,28 +108,27 @@ class UserManager:
                 image = cv2.resize(image, None, fx=scale, fy=scale)
 
             # 检测人脸
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            face_locations = fr.face_locations(rgb_image, model="hog")
+            detections = detector.detect(image)
 
-            if len(face_locations) == 0:
-                face_locations = fr.face_locations(rgb_image, model="cnn")
-
-            if len(face_locations) == 0:
+            if len(detections) == 0:
                 continue
 
-            # 提取人脸特征
-            face_encodings = fr.face_encodings(rgb_image, face_locations)
+            # 取置信度最高的人脸
+            best_det = max(detections, key=lambda d: d.confidence if hasattr(d, 'confidence') else 1.0)
+            if hasattr(best_det, 'x1'):
+                x1, y1, x2, y2 = best_det.x1, best_det.y1, best_det.x2, best_det.y2
+            else:
+                x1, y1, x2, y2 = best_det[:4]
 
-            if len(face_encodings) > 0:
-                # 保存图片（编号从现有数量开始）
-                image_path = os.path.join(user_dir, f"{existing_count + saved_count}.jpg")
-                # 使用 imencode 保存图片，支持中文路径
-                _, img_encoded = cv2.imencode('.jpg', image)
-                img_encoded.tofile(image_path)
+            # 保存图片（编号从现有数量开始）
+            image_path = os.path.join(user_dir, f"{existing_count + saved_count}.jpg")
+            # 使用 imencode 保存图片，支持中文路径
+            _, img_encoded = cv2.imencode('.jpg', image)
+            img_encoded.tofile(image_path)
 
-                # 保存人脸特征到数据库
-                self.db.add_face_encoding(user_id, face_encodings[0], image_path)
-                saved_count += 1
+            # 保存人脸区域到数据库（embedding 将在后续生成）
+            # 这里只保存图片，embedding 由 generate_encodings 生成
+            saved_count += 1
 
         # 使缓存失效
         self._invalidate_cache()
@@ -183,9 +175,9 @@ class UserManager:
         existing_count = self.db.get_user_face_count(user_id)
         saved_count = 0
 
-        fr = _get_face_recognition()
-        if fr is None:
-            raise RuntimeError("face_recognition/dlib 未安装，无法添加人脸")
+        detector = _get_detector()
+        if detector is None:
+            raise RuntimeError("人脸检测器未安装，无法添加人脸")
 
         for image in images:
             # 如果图片太大，先缩小
@@ -195,26 +187,24 @@ class UserManager:
                 image = cv2.resize(image, None, fx=scale, fy=scale)
 
             # 检测人脸
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            face_locations = fr.face_locations(rgb_image, model="hog")
+            detections = detector.detect(image)
 
-            if len(face_locations) == 0:
-                face_locations = fr.face_locations(rgb_image, model="cnn")
-
-            if len(face_locations) == 0:
+            if len(detections) == 0:
                 continue
 
-            # 提取人脸特征
-            face_encodings = fr.face_encodings(rgb_image, face_locations)
+            # 取置信度最高的人脸
+            best_det = max(detections, key=lambda d: d.confidence if hasattr(d, 'confidence') else 1.0)
+            if hasattr(best_det, 'x1'):
+                x1, y1, x2, y2 = best_det.x1, best_det.y1, best_det.x2, best_det.y2
+            else:
+                x1, y1, x2, y2 = best_det[:4]
 
-            if len(face_encodings) > 0:
-                # 保存图片
-                image_path = os.path.join(user_dir, f"{existing_count + saved_count}.jpg")
-                cv2.imwrite(image_path, image)
+            # 保存图片
+            image_path = os.path.join(user_dir, f"{existing_count + saved_count}.jpg")
+            cv2.imwrite(image_path, image)
 
-                # 保存人脸特征到数据库
-                self.db.add_face_encoding(user_id, face_encodings[0], image_path)
-                saved_count += 1
+            # 保存到数据库（embedding 将在后续生成）
+            saved_count += 1
 
         # 使缓存失效
         self._invalidate_cache()
@@ -442,27 +432,39 @@ class UserManager:
         if len(self._cached_encodings) == 0:
             return False, "Unknown", 0.0, -1
 
-        fr = _get_face_recognition()
-        if fr is None:
-            return False, "Unknown", 0.0, -1
+        # 使用 numpy 计算余弦相似度
+        try:
+            # 检查编码维度是否匹配
+            if len(self._cached_encodings) > 0:
+                cached_dim = self._cached_encodings[0].shape[0]
+                input_dim = face_encoding.shape[0]
+                if cached_dim != input_dim:
+                    print(f"Warning: Encoding dimension mismatch (cached={cached_dim}, input={input_dim})")
+                    return False, "Unknown", 0.0, -1
 
-        # 检查编码维度是否匹配
-        if len(self._cached_encodings) > 0:
-            cached_dim = self._cached_encodings[0].shape[0]
-            input_dim = face_encoding.shape[0]
-            if cached_dim != input_dim:
-                print(f"Warning: Encoding dimension mismatch (cached={cached_dim}, input={input_dim}), skipping face_recognition")
+            # 计算余弦相似度
+            similarities = []
+            for cached_enc in self._cached_encodings:
+                # L2 归一化
+                cached_norm = cached_enc / (np.linalg.norm(cached_enc) + 1e-6)
+                input_norm = face_encoding / (np.linalg.norm(face_encoding) + 1e-6)
+                sim = np.dot(cached_norm, input_norm)
+                similarities.append(sim)
+
+            similarities = np.array(similarities)
+            best_match_idx = np.argmax(similarities)
+            best_similarity = similarities[best_match_idx]
+
+            # 转换为距离（1 - similarity）
+            best_distance = 1 - best_similarity
+
+            if best_distance <= tolerance:
+                confidence = best_similarity
+                return True, self._cached_names[best_match_idx], confidence, self._cached_user_ids[best_match_idx]
+            else:
                 return False, "Unknown", 0.0, -1
-
-        face_distances = fr.face_distance(self._cached_encodings, face_encoding)
-
-        best_match_idx = np.argmin(face_distances)
-        best_distance = face_distances[best_match_idx]
-
-        if best_distance <= tolerance:
-            confidence = max(0, 1 - best_distance)
-            return True, self._cached_names[best_match_idx], confidence, self._cached_user_ids[best_match_idx]
-        else:
+        except Exception as e:
+            print(f"Verification error: {e}")
             return False, "Unknown", 0.0, -1
 
     def reload_cache(self):

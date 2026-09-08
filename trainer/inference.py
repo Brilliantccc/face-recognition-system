@@ -1,7 +1,7 @@
 """
 人脸模型推理模块
 使用训练好的模型进行人脸识别
-支持 YOLO 人脸检测 (更快速)
+支持模块化架构：检测器 + 识别器 可自由组合
 """
 
 import os
@@ -15,7 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 使用统一的 PyTorch 工具模块
 from common import torch_utils
-from common.config import USE_YOLO_DETECTION, YOLO_MODEL_SIZE, YOLO_CONFIDENCE, FACE_INPUT_SIZE
+from common.config import (
+    USE_YOLO_DETECTION, YOLO_MODEL_PATH, YOLO_CONFIDENCE, FACE_INPUT_SIZE,
+    DETECTION_BACKEND, RECOGNITION_BACKEND
+)
 
 # 从 torch_utils 获取 PyTorch 组件
 torch = torch_utils.torch
@@ -33,36 +36,28 @@ if TORCH_AVAILABLE:
 
 
 class FaceRecognizer:
-    """人脸识别器"""
+    """人脸识别器（使用模块化架构）"""
     def __init__(self, model_dir="trainer/models/saved", confidence_threshold=0.6,
-                 use_yolo: bool = None, yolo_model_size: str = None, yolo_confidence: float = None):
+                 detection_backend: str = None, recognition_backend: str = None):
         """
         初始化识别器
         :param model_dir: 模型目录
         :param confidence_threshold: 置信度阈值
-        :param use_yolo: 是否使用 YOLO 进行人脸检测
-        :param yolo_model_size: YOLO 模型大小
-        :param yolo_confidence: YOLO 置信度阈值
+        :param detection_backend: 检测器后端 ("yolo", "face_recognition", "haar", "auto")
+        :param recognition_backend: 识别器后端 ("mobilenet", "face_recognition", "auto")
         """
         self.model_dir = model_dir
         self.confidence_threshold = confidence_threshold
+
         # 使用 torch_utils 统一管理设备选择
         self.device = torch_utils.get_device(prefer_gpu=True)
         if self.device is None:
             raise RuntimeError("PyTorch 未安装")
         print(f"FaceRecognizer using device: {self.device}")
 
-        # YOLO 配置
-        self.use_yolo = use_yolo if use_yolo is not None else USE_YOLO_DETECTION
-        self.yolo_detector = None
-
-        if self.use_yolo:
-            self._init_yolo_detector(yolo_model_size, yolo_confidence)
-
-        # 人脸检测器 (备用)
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default_aligned.xml')
-        if self.face_cascade.empty():
-            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # 初始化检测器
+        self.detector = None
+        self._init_detector(detection_backend or DETECTION_BACKEND)
 
         # 数据变换
         self.transform = transforms.Compose([
@@ -78,33 +73,19 @@ class FaceRecognizer:
         self.embeddings = {}  # 存储已知人脸的嵌入向量
         self.load_model()
 
-    def _init_yolo_detector(self, model_size: str = None, confidence: float = None):
-        """初始化 YOLO 检测器"""
+    def _init_detector(self, backend: str):
+        """初始化检测器"""
+        from common.detectors import DetectorFactory
+
         try:
-            from common.yolo_detector import YOLOFaceDetector
-
-            model_size = model_size or YOLO_MODEL_SIZE
-            conf = confidence or YOLO_CONFIDENCE
-            
-            # 自动检测 GPU 可用性
-            try:
-                import torch
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                device = "cpu"
-
-            self.yolo_detector = YOLOFaceDetector(
-                model_size=model_size,
-                confidence=conf,
-                device=device
-            )
-            print(f"YOLO detector initialized for FaceRecognizer (device: {device})")
-        except ImportError as e:
-            print(f"Warning: YOLO not available, using Haar Cascade: {e}")
-            self.use_yolo = False
+            if backend == "auto":
+                self.detector = DetectorFactory.create("auto")
+            else:
+                self.detector = DetectorFactory.create(backend)
+            print(f"Detector initialized: {type(self.detector).__name__}")
         except Exception as e:
-            print(f"Warning: YOLO initialization failed: {e}")
-            self.use_yolo = False
+            print(f"Warning: Failed to initialize detector: {e}")
+            self.detector = None
 
     def load_model(self):
         """加载模型（自动查找最新版本）"""
@@ -159,37 +140,26 @@ class FaceRecognizer:
         :param image: BGR格式的图片
         :return: 人脸位置列表 [(x, y, w, h), ...]
         """
-        if self.use_yolo and self.yolo_detector is not None:
-            return self._detect_faces_yolo(image)
-        else:
-            return self._detect_faces_haar(image)
+        if self.detector is None:
+            print("Warning: detector not available")
+            return []
 
-    def _detect_faces_yolo(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """
-        使用 YOLO 检测人脸
-        :param image: BGR格式的图片
-        :return: 人脸位置列表 [(x, y, w, h), ...]
-        """
-        detections = self.yolo_detector.detect(image)
-
-        faces = []
-        for x1, y1, x2, y2, conf in detections:
+        try:
+            detections = self.detector.detect(image)
             # 转换为 (x, y, w, h) 格式
-            w = x2 - x1
-            h = y2 - y1
-            faces.append((x1, y1, w, h))
-
-        return faces
-
-    def _detect_faces_haar(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """
-        使用 Haar Cascade 检测人脸
-        :param image: BGR格式的图片
-        :return: 人脸位置列表 [(x, y, w, h), ...]
-        """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 3)
-        return faces
+            faces = []
+            for det in detections:
+                if hasattr(det, 'x1'):
+                    x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+                else:
+                    x1, y1, x2, y2 = det[:4]
+                w = x2 - x1
+                h = y2 - y1
+                faces.append((x1, y1, w, h))
+            return faces
+        except Exception as e:
+            print(f"Detection error: {e}")
+            return []
 
     def preprocess_face(self, image, face_rect):
         """
@@ -346,35 +316,56 @@ class FaceRecognizer:
         动态启用/禁用 YOLO 检测
         :param enabled: 是否启用
         """
-        self.use_yolo = enabled
-        if enabled and self.yolo_detector is None:
-            self._init_yolo_detector()
-        print(f"YOLO detection {'enabled' if enabled else 'disabled'}")
+        if enabled:
+            try:
+                from common.detectors import YOLODetector
+                self.detector = YOLODetector()
+            except Exception as e:
+                print(f"Failed to enable YOLO: {e}")
+        else:
+            try:
+                from common.detectors import FaceRecognitionDetector
+                self.detector = FaceRecognitionDetector()
+            except Exception as e:
+                print(f"Failed to disable YOLO: {e}")
 
     def get_detection_method(self) -> str:
         """
         获取当前使用的检测方法
         :return: 检测方法名称
         """
-        return "YOLO" if (self.use_yolo and self.yolo_detector) else "Haar Cascade"
+        if self.detector:
+            return type(self.detector).__name__
+        return "None"
 
 
 class FaceDetector:
-    """简单的人脸检测器（使用 OpenCV）"""
-    def __init__(self):
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default_aligned.xml')
-        if self.face_cascade.empty():
-            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    """简单的人脸检测器（使用模块化架构）"""
+    def __init__(self, backend: str = "auto"):
+        from common.detectors import DetectorFactory
+        self.detector = DetectorFactory.create(backend)
 
     def detect(self, image, min_confidence=0.5):
         """
         检测人脸
         :param image: BGR格式的图片
-        :return: 人脸位置列表
+        :return: 人脸位置列表 [(x, y, w, h), ...]
         """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
-        return faces
+        try:
+            detections = self.detector.detect(image)
+            # 转换为 (x, y, w, h) 格式
+            faces = []
+            for det in detections:
+                if hasattr(det, 'x1'):
+                    x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+                else:
+                    x1, y1, x2, y2 = det[:4]
+                if det.confidence >= min_confidence if hasattr(det, 'confidence') else True:
+                    faces.append((x1, y1, x2-x1, y2-y1))
+            return faces
+        except Exception as e:
+            print(f"Warning: face detection failed: {e}")
+            return []
 
 
 def test_recognition(model_dir="trainer/models/saved"):

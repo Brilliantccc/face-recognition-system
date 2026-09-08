@@ -43,11 +43,11 @@ int main() {
 
     // 1. 初始化引擎
     face_engine::EngineConfig config;
-    config.detector_model_path = "models/yolov8n.onnx";
+    config.detector_model_path = "models/yolov11l-face.onnx";
     config.recognizer_model_path = "models/mobilefacenet.onnx";
     config.database_path = "models/embeddings.bin";
-    config.recognition_threshold = 0.6f;
-    config.use_gpu = false;  // 暂时禁用 GPU 调试
+    config.recognition_threshold = 0.55f;
+    config.use_gpu = true;  // 启用 GPU 加速
     config.input_width = 640;
     config.input_height = 480;
 
@@ -74,9 +74,10 @@ int main() {
         return -1;
     }
 
-    // 设置摄像头分辨率
+    // 设置摄像头分辨率和帧率
     cap.set(cv::CAP_PROP_FRAME_WIDTH, config.input_width);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, config.input_height);
+    cap.set(cv::CAP_PROP_FPS, 30);  // 设置目标帧率
     std::cout << "Camera opened successfully!" << std::endl;
 
     // 3. 实时识别循环
@@ -178,9 +179,14 @@ int main() {
     }
 
     // 输出统计信息
+    auto final_stats = engine->get_performance_stats();
     std::cout << "\n========================================" << std::endl;
     std::cout << "Session Statistics:" << std::endl;
     std::cout << "  Total frames: " << frame_count << std::endl;
+    std::cout << "  Avg detection time: " << final_stats.avg_detection_ms << " ms" << std::endl;
+    std::cout << "  Avg recognition time: " << final_stats.avg_recognition_ms << " ms" << std::endl;
+    std::cout << "  Detected faces: " << final_stats.detected_faces << std::endl;
+    std::cout << "  Recognized faces: " << final_stats.recognized_faces << std::endl;
     std::cout << "========================================" << std::endl;
 
     cap.release();
