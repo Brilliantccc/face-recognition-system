@@ -64,7 +64,7 @@ class AccessControl:
         # 初始化识别器
         self._init_recognizer(recognition_backend or RECOGNITION_BACKEND)
 
-        # 初始化数据库
+        # 初始化数据库（根据识别器模型选择对应的 embeddings.bin）
         self._init_database(database_backend or DATABASE_BACKEND)
 
         # 加载数据库到识别器
@@ -135,18 +135,32 @@ class AccessControl:
             self.recognizer = None
 
     def _init_database(self, backend: str):
-        """初始化数据库"""
+        """初始化数据库（根据当前识别器模型选择对应的 embeddings.bin）"""
         from common.databases import DatabaseFactory
+
+        # 解析当前识别器的模型名称，用于选择对应的 embeddings.bin
+        recognizer_model = self._resolve_recognizer_model_name()
 
         try:
             if backend == "auto":
-                self.database = DatabaseFactory.create("auto")
+                self.database = DatabaseFactory.create("auto", model=recognizer_model)
             else:
-                self.database = DatabaseFactory.create(backend)
-            print(f"Database initialized: {type(self.database).__name__}")
+                self.database = DatabaseFactory.create(backend, model=recognizer_model)
+            print(f"Database initialized: {type(self.database).__name__} (model={recognizer_model})")
         except Exception as e:
             print(f"Warning: Failed to initialize database: {e}")
             self.database = None
+
+    def _resolve_recognizer_model_name(self) -> str:
+        """根据当前识别器类型推断模型名称（用于选择 embeddings.bin）"""
+        if self.recognizer is None:
+            return "mobilenet"
+        class_name = type(self.recognizer).__name__
+        if "InsightFace" in class_name:
+            return "insightface"
+        if "FaceRecognition" in class_name:
+            return "face_recognition"
+        return "mobilenet"
 
     def _load_database_to_recognizer(self):
         """加载数据库到识别器"""
@@ -518,6 +532,8 @@ class AccessControl:
         """从指定目录加载模型（兼容旧版 GUI）"""
         try:
             from common.recognizers import MobileFaceNetRecognizer
+            print(f"[DEBUG] Loading model from: {model_dir}")
+            print(f"[DEBUG] Path exists: {os.path.exists(model_dir)}")
             self.recognizer = MobileFaceNetRecognizer(model_dir=model_dir)
             self.use_trained_model = True
             self.trained_model = self.recognizer
@@ -525,6 +541,8 @@ class AccessControl:
             return True
         except Exception as e:
             print(f"Failed to load model from {model_dir}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def set_yolo_enabled(self, enabled: bool):

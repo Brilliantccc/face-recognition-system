@@ -7,26 +7,22 @@
 ```
 trainer/
 ├── models/
-│   ├── __init__.py
-│   └── facenet.py          # MobileFaceNet 网络 + ArcFaceLoss 定义
-├── gui/
-│   ├── __init__.py
-│   └── trainer_window.py    # 训练 GUI 平台
+│   ├── facenet.py           # MobileFaceNet 网络 + ArcFaceLoss 定义
+│   ├── yolov11l-face.pt     # YOLO 人脸检测模型
+│   └── saved/               # 训练好的模型
+│       ├── optimal_v1/
+│       └── optimal_v2/
 ├── data/
 │   ├── raw/                 # 原始数据集（CASIA-WebFace 解压到这里）
-│   │   └── CASIA-WebFace/
-│   │       ├── 0000001/
-│   │       └── ...
-│   ├── aligned/             # 预处理后的数据集（脚本自动生成）
-│   │   ├── train/
-│   │   └── val/
-│   └── register/            # 门禁注册数据
-├── models/saved/            # 训练好的模型
-├── collect_data.py          # 数据收集工具
+│   └── aligned/             # 预处理后的数据集（脚本自动生成）
+│       ├── train/
+│       └── val/
+├── train_optimal.py         # ★ 主力训练脚本（RTX 3060 优化）
+├── finetune_local.py        # 微调 + 阈值校准
 ├── preprocess.py            # CASIA-WebFace 预处理脚本
-├── train.py                 # 训练脚本
-├── inference.py             # 推理模块
-└── main.py                  # 训练平台入口
+├── collect_data.py          # 数据收集工具（摄像头/文件夹）
+├── inference.py             # 实时识别测试
+└── view_logs.py             # 门禁日志查看工具
 ```
 
 ## 快速开始
@@ -75,69 +71,75 @@ python trainer/preprocess.py --raw-dir trainer/data/raw/CASIA-WebFace \
                              --size 112 --val-ratio 0.1
 ```
 
-预处理完成后，数据在 `trainer/data/aligned/` 中：
-```
-trainer/data/aligned/
-├── train/          # 训练集（90%）
-│   ├── 0000001/    # 112×112 对齐后的人脸
-│   └── ...
-└── val/            # 验证集（10%）
-    ├── 0000001/
-    └── ...
-```
-
 ### 4. 训练模型
 
 ```bash
-# 命令行训练
-python trainer/train.py --data trainer/data/aligned --epochs 50 --batch-size 64
+# RTX 3060 优化版（推荐）
+python trainer/train_optimal.py --epochs 100 --batch-size 128 --lr 0.01
 
-# 或使用 GUI 训练平台（推荐）
-python 启动_训练平台.py
+# 从断点续训
+python trainer/train_optimal.py --resume
+
+# CPU 模式
+python trainer/train_optimal.py --cpu --epochs 50 --batch-size 32
 ```
 
 **训练参数说明：**
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| epochs | 50 | 训练轮数 |
-| batch-size | 32 | 批次大小 |
-| lr | 0.001 | 学习率 |
+| --epochs | 100 | 训练轮数 |
+| --batch-size | 128 | 批次大小（RTX 3060 6GB 推荐 128） |
+| --lr | 0.01 | 峰值学习率（OneCycleLR 调度） |
 | --cpu | - | 强制使用 CPU |
+| --resume | - | 从上次断点继续训练 |
 
 ### 5. 测试识别
 
 ```bash
-# 打开摄像头测试
+# 打开摄像头实时测试
 python trainer/inference.py
+
+# 指定模型目录
+python trainer/inference.py --model-dir trainer/models/saved/optimal_v2
 ```
 
 ## 模型结构
 
 **MobileFaceNet** — 轻量级人脸识别网络：
 - 输入: 112×112 RGB 图片
-- 输出: 128 维嵌入向量
+- 输出: 128 维 L2 归一化 embedding
 - 参数量: ~1M
 - 基于 MobileNetV2 倒残差结构
 
 **ArcFace Loss** — 角度间隔损失函数：
 - 增大类间距离，缩小类内距离
-- s=30.0（缩放因子），m=0.50（角度间隔）
+- s=32.0（缩放因子），m=0.20（角度间隔）
 
 ## 训练结果
 
-训练完成后，模型保存在 `trainer/models/saved/`：
-- `best_model.pth`: 最佳模型（含分类头）
-- `inference_model.pth`: 推理模型（无分类头）
-- `model_info.json`: 类别信息
-- `training_history.json`: 训练历史
+训练完成后，模型保存在 `trainer/models/saved/optimal_vN/`：
 
-## 集成到门禁系统
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `best_model.pth` | ~9.4MB | 完整模型（含 ArcFace 分类头 + class_to_idx） |
+| `inference_model.pth` | ~4.2MB | 推理模型（仅特征提取层，无分类头） |
+| `arcface_weight.pth` | ~5.2MB | ArcFace 分类层权重（续训/微调用） |
+| `model_info.json` | - | 类别映射 + 训练最佳阈值 |
 
-训练完成后，门禁系统会自动加载 `trainer/models/saved/` 中的模型。
-在 `gate/access_control.py` 中，系统优先使用训练模型进行识别，
-置信度不够时回退到 face_recognition 库。
+## 微调模型
 
-## 数据收集（可选）
+用门禁实际数据微调预训练模型，提升特定人员的识别准确率：
+
+```bash
+# 微调
+python trainer/finetune_local.py
+
+# 仅校准阈值（不重新训练）
+python trainer/finetune_local.py --calibrate
+```
+
+## 数据收集
 
 如果只想用少量人员数据训练：
 
@@ -147,4 +149,20 @@ python trainer/collect_data.py --mode camera --name "张三" --num 50
 
 # 从文件夹收集
 python trainer/collect_data.py --mode folder --name "张三" --source "path/to/photos"
+
+# 划分训练/测试集
+python trainer/collect_data.py --mode split
+```
+
+## 日志查看
+
+```bash
+# 查看最近 7 天门禁日志
+python trainer/view_logs.py
+
+# 查看特定用户
+python trainer/view_logs.py --user "张三"
+
+# 导出为 CSV
+python trainer/view_logs.py --export access_logs.csv --days 30
 ```

@@ -66,10 +66,19 @@ class Database:
                 user_id INTEGER NOT NULL,
                 encoding BLOB NOT NULL,
                 image_path TEXT,
+                model TEXT DEFAULT 'mobilenet',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         ''')
+
+        # 检查并添加 model 列（兼容旧数据库）
+        cursor.execute("PRAGMA table_info(face_encodings)")
+        encoding_columns = [col[1] for col in cursor.fetchall()]
+        if 'model' not in encoding_columns:
+            cursor.execute("ALTER TABLE face_encodings ADD COLUMN model TEXT DEFAULT 'mobilenet'")
+        # 将旧数据中 model 为 NULL 的记录归类为 mobilenet
+        cursor.execute("UPDATE face_encodings SET model = 'mobilenet' WHERE model IS NULL")
 
         # 门禁日志表
         cursor.execute('''
@@ -343,12 +352,13 @@ class Database:
             for row in rows
         ]
 
-    def add_face_encoding(self, user_id: int, encoding: np.ndarray, image_path: str = None):
+    def add_face_encoding(self, user_id: int, encoding: np.ndarray, image_path: str = None, model: str = "mobilenet"):
         """
         添加人脸特征
         :param user_id: 用户ID
         :param encoding: 人脸特征向量
         :param image_path: 人脸图片路径
+        :param model: 生成该编码的模型名称 ("mobilenet", "insightface", "face_recognition")
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -356,30 +366,64 @@ class Database:
         # 统一转为 float32 存储，避免读取时维度错位
         encoding_bytes = encoding.astype(np.float32).tobytes()
         cursor.execute(
-            "INSERT INTO face_encodings (user_id, encoding, image_path) VALUES (?, ?, ?)",
-            (user_id, encoding_bytes, image_path)
+            "INSERT INTO face_encodings (user_id, encoding, image_path, model) VALUES (?, ?, ?, ?)",
+            (user_id, encoding_bytes, image_path, model)
         )
         conn.commit()
         conn.close()
 
-    def get_face_encodings(self, user_id: int = None) -> List[Tuple[int, np.ndarray]]:
+    def get_face_encodings(self, user_id: int = None, model: str = None) -> List[Tuple[int, np.ndarray]]:
         """
         获取人脸特征
         :param user_id: 用户ID，为None时获取所有
+        :param model: 模型名称过滤，为None时获取所有模型
         :return: [(user_id, encoding), ...]
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        if user_id:
-            cursor.execute("SELECT user_id, encoding FROM face_encodings WHERE user_id = ?", (user_id,))
-        else:
-            cursor.execute("SELECT user_id, encoding FROM face_encodings")
+        conditions = []
+        params = []
+        if user_id is not None:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+        if model is not None:
+            conditions.append("model = ?")
+            params.append(model)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor.execute(f"SELECT user_id, encoding FROM face_encodings{where}", params)
 
         rows = cursor.fetchall()
         conn.close()
 
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
+
+    def delete_encodings_by_model(self, model: str) -> int:
+        """
+        删除指定模型的所有编码
+        :param model: 模型名称
+        :return: 删除的记录数
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM face_encodings WHERE model = ?", (model,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def get_encoding_models(self) -> List[str]:
+        """
+        获取数据库中所有已使用的模型名称
+        :return: 模型名称列表
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT model FROM face_encodings")
+        models = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return models
 
     def get_user_faces_with_id(self, user_id: int) -> List[Dict]:
         """

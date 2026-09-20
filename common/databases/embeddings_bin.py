@@ -13,18 +13,28 @@ from .base import FaceDatabase
 
 
 class EmbeddingsBinDatabase(FaceDatabase):
-    """embeddings.bin 格式的人脸数据库"""
+    """embeddings.bin 格式的人脸数据库（按模型自动选择对应文件）"""
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, model: str = None):
         """
         初始化 embeddings.bin 数据库
-        :param db_path: 数据库文件路径
+        :param db_path: 数据库文件路径（指定时忽略 model 参数）
+        :param model: 模型名称 ("mobilenet", "insightface", "face_recognition")，
+                      自动映射到对应的 bin 文件路径
         """
-        if db_path is None:
-            db_path = os.path.join(
-                os.path.dirname(__file__), "..", "..", "deploy", "models", "embeddings.bin"
-            )
-        self.db_path = db_path
+        if db_path is not None:
+            # 显式指定路径，直接使用
+            self.db_path = db_path
+        elif model is not None:
+            # 按模型名称查找对应路径
+            from common.config import EMBEDDINGS_BIN_PATHS
+            self.db_path = EMBEDDINGS_BIN_PATHS.get(model)
+            if self.db_path is None:
+                raise ValueError(f"未知模型: {model}，可选: {list(EMBEDDINGS_BIN_PATHS.keys())}")
+        else:
+            # 默认使用 mobilenet
+            from common.config import EMBEDDINGS_BIN_PATH
+            self.db_path = EMBEDDINGS_BIN_PATH
 
     def load(self) -> Dict[str, np.ndarray]:
         """

@@ -43,7 +43,15 @@ YOLO_CONFIDENCE = 0.5  # YOLO 置信度阈值
 
 # 识别模型配置（兼容旧版）
 USE_TRAINED_MODEL = True  # 是否使用 MobileFaceNet（始终启用）
-EMBEDDINGS_BIN_PATH = os.path.join(BASE_DIR, "deploy", "models", "embeddings.bin")  # 统一数据库路径
+
+# 按模型区分的 embeddings.bin 路径（不同维度不能混用）
+EMBEDDINGS_BIN_PATHS = {
+    "mobilenet":     os.path.join(BASE_DIR, "deploy", "models", "embeddings_mbn.bin"),      # 128 维
+    "insightface":   os.path.join(BASE_DIR, "deploy", "models", "embeddings_if.bin"),        # 512 维
+    "face_recognition": os.path.join(BASE_DIR, "deploy", "models", "embeddings_fr.bin"),     # 128 维
+}
+# 默认路径（兼容旧版代码引用）
+EMBEDDINGS_BIN_PATH = EMBEDDINGS_BIN_PATHS["mobilenet"]
 
 # PyTorch / CUDA 配置
 PREFER_GPU = True  # 是否优先使用 GPU（如果可用）

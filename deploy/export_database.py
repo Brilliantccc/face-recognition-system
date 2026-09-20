@@ -69,7 +69,7 @@ def export_database(db_path: str, output_path: str):
 
 if __name__ == '__main__':
     db_path = 'data/db/face_access.db'
-    output_path = 'deploy/models/embeddings.bin'
+    output_path = 'deploy/models/embeddings_mbn.bin'
 
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

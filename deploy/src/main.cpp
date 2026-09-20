@@ -4,6 +4,8 @@
 #include "face_engine.h"
 #include <opencv2/opencv.hpp>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <chrono>
 #include <thread>
 
@@ -45,11 +47,28 @@ int main() {
     face_engine::EngineConfig config;
     config.detector_model_path = "models/yolov11l-face.onnx";
     config.recognizer_model_path = "models/mobilefacenet.onnx";
-    config.database_path = "models/embeddings.bin";
+    config.database_path = "models/embeddings_mbn.bin";
     config.recognition_threshold = 0.55f;
-    config.use_gpu = true;  // 启用 GPU 加速
+    config.use_gpu = true;
     config.input_width = 640;
     config.input_height = 480;
+
+    // 搜索模型文件（exe 可能在不同目录运行）
+    auto find_file = [](const std::string& name) -> std::string {
+        std::vector<std::string> prefixes = {"", "../", "../../"};
+        for (const auto& p : prefixes) {
+            std::ifstream f(p + name);
+            if (f.good()) return p + name;
+        }
+        return name;  // fallback
+    };
+    config.detector_model_path = find_file(config.detector_model_path);
+    config.recognizer_model_path = find_file(config.recognizer_model_path);
+    config.database_path = find_file(config.database_path);
+
+    std::cout << "Detector:   " << config.detector_model_path << std::endl;
+    std::cout << "Recognizer: " << config.recognizer_model_path << std::endl;
+    std::cout << "Database:   " << config.database_path << std::endl;
 
     std::cout << "\n[1/3] Initializing engine..." << std::endl;
     auto engine = face_engine::create_face_engine();

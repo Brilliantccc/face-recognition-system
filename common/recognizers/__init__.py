@@ -6,6 +6,7 @@
 from .base import FaceRecognizer
 from .mobilenet import MobileFaceNetRecognizer
 from .face_recognition import FaceRecognitionRecognizer
+from .insightface import InsightFaceRecognizer
 
 # 识别器优先级（auto 模式下按此顺序尝试）
 RECOGNIZER_PRIORITY = ["mobilenet", "face_recognition"]
@@ -14,6 +15,7 @@ RECOGNIZER_PRIORITY = ["mobilenet", "face_recognition"]
 RECOGNIZERS = {
     "mobilenet": MobileFaceNetRecognizer,
     "face_recognition": FaceRecognitionRecognizer,
+    "insightface": InsightFaceRecognizer,
 }
 
 
@@ -65,5 +67,6 @@ __all__ = [
     "FaceRecognizer",
     "MobileFaceNetRecognizer",
     "FaceRecognitionRecognizer",
+    "InsightFaceRecognizer",
     "RecognizerFactory",
 ]

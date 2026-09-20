@@ -83,7 +83,7 @@ class SQLiteDatabase(FaceDatabase):
 
             if rows:
                 # 计算平均 embedding
-                encodings = [np.frombuffer(row[0], dtype=np.float64) for row in rows]
+                encodings = [np.frombuffer(row[0], dtype=np.float32) for row in rows]
                 avg_encoding = np.mean(encodings, axis=0)
                 result[name] = avg_encoding
 
@@ -114,7 +114,7 @@ class SQLiteDatabase(FaceDatabase):
                 user_id = cursor.lastrowid
 
             # 保存编码
-            encoding_bytes = embedding.astype(np.float64).tobytes()
+            encoding_bytes = embedding.astype(np.float32).tobytes()
             cursor.execute(
                 "INSERT INTO face_encodings (user_id, encoding) VALUES (?, ?)",
                 (user_id, encoding_bytes)

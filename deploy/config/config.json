@@ -1,7 +1,7 @@
 {
     "detector_model": "models/yolov11l-face.onnx",
     "recognizer_model": "models/mobilefacenet.onnx",
-    "database_path": "models/embeddings.bin",
+    "database_path": "models/embeddings_mbn.bin",
     "recognition_threshold": 0.55,
     "use_gpu": true,
     "camera_id": 0,

@@ -251,7 +251,7 @@ def regenerate_database(db_path: str, output_path: str, model_path: str):
 
 if __name__ == '__main__':
     db_path = os.path.join(project_root, 'data', 'db', 'face_access.db')
-    output_path = os.path.join(project_root, 'deploy', 'models', 'embeddings.bin')
+    output_path = os.path.join(project_root, 'deploy', 'models', 'embeddings_mbn.bin')
     model_path = os.path.join(project_root, 'deploy', 'models', 'mobilefacenet.onnx')
 
     # 确保输出目录存在

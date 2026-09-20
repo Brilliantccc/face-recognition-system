@@ -680,16 +680,15 @@ class GateWindow(QMainWindow):
         known_faces = self.access_control.get_known_faces_count()
         self.info_label.setText(f"注册用户: {active_count}  |  人脸编码: {known_faces}")
 
-        # 模型信息
-        if self.access_control.use_trained_model:
-            model_dir = getattr(self.access_control, 'trained_model_dir', '')
-            model_name = os.path.basename(model_dir) if model_dir else "未知"
-            threshold = getattr(self.access_control, 'trained_threshold', 0.40)
-            val_acc = getattr(self.access_control, 'trained_val_acc', None)
-            if val_acc:
-                self.model_label.setText(f"{model_name}\n阈值: {threshold:.2f}  准确率: {val_acc:.1f}%")
-            else:
-                self.model_label.setText(f"{model_name}\n阈值: {threshold:.2f}")
+        # 模型信息（使用模块化后端获取识别器名称）
+        rec_method = self.access_control.get_recognition_method()
+        if "InsightFace" in rec_method:
+            self.model_label.setText("InsightFace ArcFace-R100\n512维 embedding, 高精度预训练")
+        elif "MobileFaceNet" in rec_method:
+            threshold = getattr(self.access_control.recognizer, '_threshold', 0.55)
+            model_dir = getattr(self.access_control.recognizer, 'model_dir', '')
+            model_name = os.path.basename(model_dir) if model_dir else "MobileFaceNet"
+            self.model_label.setText(f"{model_name}\n阈值: {threshold:.2f}")
         else:
             self.model_label.setText("face_recognition (内置)")
 
@@ -720,53 +719,93 @@ class GateWindow(QMainWindow):
             self.log_list.addItem(item)
 
     def _populate_model_list(self):
-        """填充模型选择下拉框"""
+        """填充模型选择下拉框（支持 mobilenet / insightface / face_recognition）"""
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
 
+        # 获取当前识别器类型
+        current_method = self.access_control.get_recognition_method()
+        current_model_dir = ""
+        if hasattr(self.access_control.recognizer, 'model_dir'):
+            current_model_dir = self.access_control.recognizer.model_dir or ""
+
+        # 1. InsightFace 选项
+        try:
+            from common.recognizers import InsightFaceRecognizer
+            self.model_combo.addItem("InsightFace ArcFace (512维, 高精度)", "insightface")
+        except Exception:
+            pass
+
+        # 2. MobileFaceNet 训练版本
         models = self.access_control.get_available_models()
-        current_dir = getattr(self.access_control, 'trained_model_dir', '')
-        use_trained = getattr(self.access_control, 'use_trained_model', True)
-
-        for i, m in enumerate(models):
+        for m in models:
             if m.get('is_builtin'):
-                display = "face_recognition (内置)"
-            else:
-                display = m['name']
-            self.model_combo.addItem(display, m['path'])
+                continue  # 后面单独加 face_recognition
+            self.model_combo.addItem(f"MobileFaceNet: {m['name']}", m['path'])
 
-            if m.get('is_builtin') and not use_trained:
-                self.model_combo.setCurrentIndex(i)
-            elif m['path'] == current_dir and use_trained:
-                self.model_combo.setCurrentIndex(i)
+        # 3. face_recognition 兜底
+        self.model_combo.addItem("face_recognition (内置)", "face_recognition")
 
-        if self.model_combo.count() == 0:
-            self.model_combo.addItem("无可用模型", "")
-            self.model_combo.setEnabled(False)
+        # 定位当前选中项
+        selected = False
+        for i in range(self.model_combo.count()):
+            data = self.model_combo.itemData(i)
+            if data == "insightface" and "InsightFace" in current_method:
+                self.model_combo.setCurrentIndex(i)
+                selected = True
+                break
+            elif data == "face_recognition" and "FaceRecognition" in current_method:
+                self.model_combo.setCurrentIndex(i)
+                selected = True
+                break
+            elif data and data == current_model_dir:
+                self.model_combo.setCurrentIndex(i)
+                selected = True
+                break
+
+        if not selected and self.model_combo.count() > 0:
+            self.model_combo.setCurrentIndex(0)
 
         self.model_combo.blockSignals(False)
 
     def on_model_changed(self, index):
         """切换识别模型"""
-        model_path = self.model_combo.currentData()
-        if not model_path:
+        model_data = self.model_combo.currentData()
+        if not model_data:
             return
 
         self.model_combo.blockSignals(True)
         self.model_combo.setEnabled(False)
 
-        if model_path == 'face_recognition':
-            self.access_control.use_trained_model = False
-            self.access_control.reload_known_faces()
-            self.update_ui_info()
-            self.model_combo.blockSignals(False)
-            self.model_combo.setEnabled(True)
-        else:
+        if model_data == "insightface":
             import threading
-            threading.Thread(target=self._load_model_thread, args=(model_path,), daemon=True).start()
+            threading.Thread(target=self._switch_recognizer_thread,
+                           args=("insightface",), daemon=True).start()
+        elif model_data == "face_recognition":
+            import threading
+            threading.Thread(target=self._switch_recognizer_thread,
+                           args=("face_recognition",), daemon=True).start()
+        else:
+            # MobileFaceNet 模型目录
+            import threading
+            threading.Thread(target=self._load_model_thread,
+                           args=(model_data,), daemon=True).start()
+
+    def _switch_recognizer_thread(self, backend):
+        """后台线程切换识别器后端"""
+        try:
+            from common.recognizers import RecognizerFactory
+            new_recognizer = RecognizerFactory.create(backend)
+            self.access_control.recognizer = new_recognizer
+            self.access_control._load_database_to_recognizer()
+            success = True
+        except Exception as e:
+            print(f"Failed to switch to {backend}: {e}")
+            success = False
+        self.model_loaded.emit(backend, success)
 
     def _load_model_thread(self, model_path):
-        """后台线程加载模型"""
+        """后台线程加载 MobileFaceNet 模型"""
         try:
             success = self.access_control.load_model_from_dir(model_path)
         except Exception:
@@ -779,8 +818,12 @@ class GateWindow(QMainWindow):
         self.model_combo.setEnabled(True)
         if success:
             self.update_ui_info()
+            name = os.path.basename(model_path) if os.path.sep in model_path else model_path
+            QMessageBox.information(self, "成功", f"已切换到: {name}")
         else:
             QMessageBox.warning(self, "错误", f"加载模型失败: {model_path}")
+            # 恢复下拉框到之前的选项
+            self._populate_model_list()
 
     def reload_faces(self):
         """重新加载人脸库"""
@@ -791,27 +834,15 @@ class GateWindow(QMainWindow):
 
     def _toggle_detection_method(self):
         """切换人脸检测方式：YOLO ↔ face_recognition"""
-        current_is_yolo = self.access_control.use_yolo and self.access_control.yolo_detector
+        det_method = self.access_control.get_detection_method()
+        current_is_yolo = "YOLO" in det_method
         new_state = not current_is_yolo
 
-        if new_state:
-            # 尝试启用 YOLO
-            try:
-                from common.yolo_detector import YOLOFaceDetector
-                import torch
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                from common.config import YOLO_MODEL_PATH, YOLO_CONFIDENCE
-                self.access_control.yolo_detector = YOLOFaceDetector(
-                    model_path=YOLO_MODEL_PATH,
-                    confidence=YOLO_CONFIDENCE,
-                    device=device
-                )
-                self.access_control.use_yolo = True
-            except Exception as e:
-                QMessageBox.warning(self, "切换失败", f"无法启用 YOLO：{e}\n请确保已安装 ultralytics 和 PyTorch。")
-                return
-        else:
-            self.access_control.use_yolo = False
+        try:
+            self.access_control.set_yolo_enabled(new_state)
+        except Exception as e:
+            QMessageBox.warning(self, "切换失败", f"切换检测方式失败：{e}")
+            return
 
         self._update_detection_toggle_style()
         method = self.access_control.get_detection_method()
@@ -819,7 +850,8 @@ class GateWindow(QMainWindow):
 
     def _update_detection_toggle_style(self):
         """更新检测方式切换按钮的样式和文字"""
-        is_yolo = self.access_control.use_yolo and self.access_control.yolo_detector
+        det_method = self.access_control.get_detection_method()
+        is_yolo = "YOLO" in det_method
 
         if is_yolo:
             self.detection_toggle_btn.setText("YOLO  ⚡ 已启用")

@@ -54,9 +54,10 @@ cd deploy
 
 C++ 版本只负责识别，注册仍在 Python 系统中：
 
-1. 在 Python 系统中注册人员
-2. 导出编码：`python deploy/export_database.py`
-3. 重启 C++ 门禁系统
+1. 在 Python 人事管理系统中注册人员
+2. 生成编码：`python admin/generate_encodings.py --model mobilenet`
+3. 导出编码：`python deploy/export_database.py`
+4. 重启 C++ 门禁系统
 
 ## 配置
 
@@ -66,10 +67,26 @@ C++ 版本只负责识别，注册仍在 Python 系统中：
 {
     "detector_model": "models/yolov11l-face.onnx",
     "recognizer_model": "models/mobilefacenet.onnx",
-    "database_path": "models/embeddings.bin",
-    "recognition_threshold": 0.6,
-    "use_gpu": true
+    "database_path": "models/embeddings_mbn.bin",
+    "recognition_threshold": 0.55,
+    "use_gpu": true,
+    "camera_id": 0,
+    "input_width": 640,
+    "input_height": 480
 }
+```
+
+## 模型文件
+
+```
+deploy/models/
+├── yolov11l-face.onnx       # YOLO 人脸检测模型（97MB）
+├── mobilefacenet.onnx        # MobileFaceNet 识别模型（3.8MB）
+├── embeddings_mbn.bin        # MobileFaceNet 人脸编码（128维）
+├── embeddings_if.bin         # InsightFace 人脸编码（512维，可选）
+└── buffalo_l/                # InsightFace 预训练模型（可选）
+    ├── w600k_r100.onnx       # ArcFace-R100 识别模型
+    └── ...
 ```
 
 ## 性能

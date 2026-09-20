@@ -34,6 +34,15 @@ def main():
     font = QFont("Microsoft YaHei", 10)
     app.setFont(font)
 
+    # 首次运行检查
+    try:
+        from setup_wizard import check_first_run, SetupWizard
+        if check_first_run():
+            wizard = SetupWizard()
+            wizard.exec_()
+    except Exception:
+        pass
+
     # 创建主窗口
     window = AdminWindow()
     window.show()
